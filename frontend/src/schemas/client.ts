@@ -22,6 +22,19 @@ export const ClientTrafficSchema = z.object({
   resetCount: z.number().optional(),
 });
 
+export const GhostLinkPolicyStateSchema = z.object({
+  policyState: z.string().optional().default(''),
+  policyVersion: z.number().optional().default(0),
+  effectiveEnabled: z.boolean().optional().default(false),
+  usageState: z.string().optional().default(''),
+  usageErrorCode: z.string().optional().default(''),
+  policyErrorCode: z.string().optional().default(''),
+  quotaBytes: z.number().optional().default(0),
+  maxTrafficBytes: z.number().optional().default(0),
+  expiryTime: z.number().optional().default(0),
+  lastSnapshotAt: z.number().optional().default(0),
+});
+
 export const ClientRecordSchema = z
   .object({
     id: z.number().optional(),
@@ -58,6 +71,7 @@ export const ClientRecordSchema = z
     keepAlive: OptionalClientKeepAliveSchema,
     forwardedPorts: z.string().optional(),
     secret: z.string().optional(),
+    ghostlinkPolicy: GhostLinkPolicyStateSchema.optional(),
     adTag: z.string().optional(),
     createdAt: z.number().optional(),
     updatedAt: z.number().optional(),
@@ -215,6 +229,7 @@ export const ClientHydrateSchema = z.object({
   inboundIds: nullableNumberArray,
   externalLinks: ExternalLinkListSchema.optional(),
   tunnelAllowedIPs: z.record(z.number().int(), z.string()).optional(),
+  ghostlinkPolicy: GhostLinkPolicyStateSchema.optional(),
 });
 
 export const BulkAdjustResultSchema = z.object({
@@ -413,6 +428,7 @@ export type ExternalLink = z.infer<typeof ExternalLinkSchema>;
 export type ClientsSummary = z.infer<typeof ClientsSummarySchema>;
 export type ClientPageResponse = z.infer<typeof ClientPageResponseSchema>;
 export type ClientHydrate = z.infer<typeof ClientHydrateSchema>;
+export type GhostLinkPolicyState = z.infer<typeof GhostLinkPolicyStateSchema>;
 export type BulkAdjustResult = z.infer<typeof BulkAdjustResultSchema>;
 export type BulkDeleteResult = z.infer<typeof BulkDeleteResultSchema>;
 export type BulkSetEnableResult = z.infer<typeof BulkSetEnableResultSchema>;

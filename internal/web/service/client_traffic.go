@@ -1,6 +1,7 @@
 package service
 
 import (
+	"context"
 	"slices"
 	"time"
 
@@ -16,6 +17,13 @@ import (
 func (s *ClientService) ResetTrafficByEmail(inboundSvc *InboundService, email string) (bool, error) {
 	if email == "" {
 		return false, common.NewError("client email is required")
+	}
+	isGhostLink, err := inboundSvc.IsGhostLinkClientEmail(email)
+	if err != nil {
+		return false, err
+	}
+	if isGhostLink {
+		return false, inboundSvc.ResetGhostLinkTrafficByEmail(context.Background(), email)
 	}
 	rec, err := s.GetRecordByEmail(nil, email)
 	if err != nil {
@@ -73,6 +81,9 @@ func (s *ClientService) BulkResetTraffic(inboundSvc *InboundService, emails []st
 	cleanEmails := trimmedUniqueEmails(emails)
 	if len(cleanEmails) == 0 {
 		return 0, nil
+	}
+	if err := ensureNoEnabledGhostLinkForClientEmails(database.GetDB(), cleanEmails); err != nil {
+		return 0, err
 	}
 
 	recordsByEmail, err := clientRecordsByEmail(nil, cleanEmails)
@@ -134,9 +145,16 @@ func (s *ClientService) BulkResetTraffic(inboundSvc *InboundService, emails []st
 }
 
 func (s *ClientService) ResetAllClientTraffics(inboundSvc *InboundService, id int) (bool, error) {
+	inbound, err := inboundSvc.GetInbound(id)
+	if err != nil {
+		return false, err
+	}
+	if inbound.Protocol == model.GhostLink && inbound.Enable {
+		return false, errGhostLinkConfigurationLocked
+	}
 	var resetNodes []int
 	var resetEmails, restore []string
-	err := submitTrafficWrite(func() error {
+	err = submitTrafficWrite(func() error {
 		var inner error
 		resetEmails, restore, resetNodes, inner = s.resetAllClientTrafficsLocked(id)
 		return inner
@@ -234,6 +252,12 @@ func (s *ClientService) resetAllClientTrafficsLocked(id int) ([]string, []string
 }
 
 func (s *ClientService) ResetAllTraffics() (bool, error) {
+	if enabled, err := hasEnabledGhostLinkInbounds(); err != nil || enabled {
+		if err != nil {
+			return false, err
+		}
+		return false, errGhostLinkConfigurationLocked
+	}
 	var affected int64
 	var resetNodes []int
 	var restore []string

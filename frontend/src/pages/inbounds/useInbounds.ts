@@ -21,6 +21,8 @@ export interface SubSettings {
   subURI: string;
   subJsonURI: string;
   subJsonEnable: boolean;
+  subClashURI: string;
+  subClashEnable: boolean;
   // Configured public host (Sub Domain, else Web Domain) used as the share/QR
   // link host when the panel is reached on a loopback address. Empty if neither
   // is set.
@@ -50,6 +52,7 @@ interface TrafficDelta {
 interface ClientRollup {
   clients: number;
   active: string[];
+  configEnabled: string[];
   deactive: string[];
   depleted: string[];
   expiring: string[];
@@ -68,6 +71,7 @@ const TRACKED_PROTOCOLS: readonly string[] = [
   Protocols.AMNEZIAWG,
   Protocols.TUIC,
   Protocols.MASQUE,
+  Protocols.GHOSTLINK,
 ];
 
 async function fetchSlimInbounds(): Promise<unknown[]> {
@@ -201,6 +205,8 @@ export function useInbounds() {
       subURI: defaults.subURI || '',
       subJsonURI: defaults.subJsonURI || '',
       subJsonEnable: !!defaults.subJsonEnable,
+      subClashURI: defaults.subClashURI || '',
+      subClashEnable: !!defaults.subClashEnable,
       publicHost: defaults.subDomain || defaults.webDomain || '',
     }),
     [
@@ -209,6 +215,8 @@ export function useInbounds() {
       defaults.subURI,
       defaults.subJsonURI,
       defaults.subJsonEnable,
+      defaults.subClashURI,
+      defaults.subClashEnable,
       defaults.subDomain,
       defaults.webDomain,
     ],
@@ -269,6 +277,7 @@ export function useInbounds() {
         : [];
       const clients = inbound?.clients || [];
       const active: string[] = [];
+      const configEnabled: string[] = [];
       const deactive: string[] = [];
       const depleted: string[] = [];
       const expiring: string[] = [];
@@ -314,7 +323,11 @@ export function useInbounds() {
             deactive.push(client.email);
             continue;
           }
-          active.push(client.email);
+          if (dbInbound.protocol === Protocols.GHOSTLINK) {
+            configEnabled.push(client.email);
+          } else {
+            active.push(client.email);
+          }
           if (inboundActive && nodeOnline?.has(client.email)) online.push(client.email);
           if (stats) {
             const expiringSoon =
@@ -332,6 +345,7 @@ export function useInbounds() {
       return {
         clients: clients.length,
         active,
+        configEnabled,
         deactive,
         depleted,
         expiring,

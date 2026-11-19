@@ -7,6 +7,7 @@ import type {
 import type { InboundSettings } from '@/schemas/protocols/inbound';
 import {
   AmneziawgClientSchema,
+  GhostLinkClientSchema,
   HysteriaClientSchema,
   MasqueClientSchema,
   MtprotoClientSchema,
@@ -174,6 +175,10 @@ function stripTlsCertUseFile(stream: Record<string, unknown>): void {
 export function rawInboundToFormValues(row: RawInboundRow): InboundFormValues {
   const protocol = (row.protocol || 'vless') as InboundSettings['protocol'];
   const rawSettings = coerceJsonObject(row.settings);
+  if (protocol === 'ghostlink' && typeof rawSettings.transportPreset !== 'string') {
+    // Round 1-9 inbounds predate presets and always used one dual listener.
+    rawSettings.transportPreset = 'dual';
+  }
   const settings = (
     protocol === 'tuic'
       ? { clients: rawSettings.clients, server: resolveTuicServerSettings(rawSettings) }
@@ -295,6 +300,8 @@ function clientSchemaForProtocol(protocol: string): z.ZodType | null {
       return TuicClientSchema;
     case 'masque':
       return MasqueClientSchema;
+    case 'ghostlink':
+      return GhostLinkClientSchema;
     default:
       return null;
   }
@@ -369,9 +376,11 @@ export function formValuesToWirePayload(
   } else if (Array.isArray(settingsPruned.clients)) {
     settingsPruned.clients = normalizeClients(values.protocol, settingsPruned.clients);
   }
-  let streamPruned = values.streamSettings
-    ? ((pruneEmpty(values.streamSettings) ?? {}) as Record<string, unknown>)
-    : undefined;
+  const usesXrayStream = values.protocol !== 'ghostlink';
+  let streamPruned =
+    usesXrayStream && values.streamSettings
+      ? ((pruneEmpty(values.streamSettings) ?? {}) as Record<string, unknown>)
+      : undefined;
   if (streamPruned) {
     streamPruned = normalizeStreamSettingsForWire(streamPruned, { side: 'inbound' });
     stripTlsCertUseFile(streamPruned);

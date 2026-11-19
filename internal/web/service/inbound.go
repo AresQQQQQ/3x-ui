@@ -19,6 +19,7 @@ import (
 	"github.com/mhsanaei/3x-ui/v3/internal/amneziawg"
 	"github.com/mhsanaei/3x-ui/v3/internal/database"
 	"github.com/mhsanaei/3x-ui/v3/internal/database/model"
+	"github.com/mhsanaei/3x-ui/v3/internal/ghostlink"
 	"github.com/mhsanaei/3x-ui/v3/internal/logger"
 	"github.com/mhsanaei/3x-ui/v3/internal/mtproto"
 	"github.com/mhsanaei/3x-ui/v3/internal/tuic"
@@ -434,6 +435,9 @@ func (s *InboundService) GetInboundOptions(userId int) ([]InboundOption, error) 
 
 func inboundStreamHints(protocol string, streamSettings string, settings string) (string, string) {
 	p := strings.ToLower(protocol)
+	if p == string(model.GhostLink) {
+		return "tcp,udp", "tls"
+	}
 	if p == "wireguard" || p == "amneziawg" || p == "hysteria" {
 		return "udp", ""
 	}
@@ -1297,6 +1301,17 @@ func (s *InboundService) normalizeMtprotoXrayPort(inbound *model.Inbound, oldSet
 func (s *InboundService) AddInbound(inbound *model.Inbound) (*model.Inbound, bool, error) {
 	defer InvalidateSubData()
 	inbound.Id = 0
+	if err := validateGhostLinkInbound(inbound); err != nil {
+		return nil, false, err
+	}
+	if inbound.Protocol == model.GhostLink {
+		// Surface the singleton rule before generic client-email validation so
+		// operators get the actionable GhostLink error, then recheck in the
+		// serialized transaction below to close the concurrent-create race.
+		if err := checkGhostLinkSingletonTx(database.GetDB(), 0); err != nil {
+			return nil, false, err
+		}
+	}
 	if err := normalizeVlessFallbacks(inbound); err != nil {
 		return nil, false, err
 	}
@@ -1480,6 +1495,11 @@ func (s *InboundService) AddInbound(inbound *model.Inbound) (*model.Inbound, boo
 	needRestart := false
 	var postCommitApply func()
 	err = runSerializedTx(func(tx *gorm.DB) error {
+		if inbound.Protocol == model.GhostLink {
+			if err := checkGhostLinkSingletonTx(tx, 0); err != nil {
+				return err
+			}
+		}
 		conflict, cErr := checkPortConflictTx(tx, inbound, 0)
 		if cErr != nil {
 			return cErr
@@ -1578,7 +1598,7 @@ func (s *InboundService) AddInbound(inbound *model.Inbound) (*model.Inbound, boo
 				return err
 			}
 		}
-		if inbound.Enable {
+		if inbound.Enable && inbound.Protocol != model.GhostLink {
 			if inbound.NodeID != nil {
 				markDirty = true
 			} else {
@@ -1617,6 +1637,21 @@ func (s *InboundService) AddInbound(inbound *model.Inbound) (*model.Inbound, boo
 	if err != nil {
 		return inbound, false, err
 	}
+	if inbound.Protocol == model.GhostLink && inbound.Enable {
+		if _, startErr := s.reconcileGhostLinkInbound(context.Background(), inbound); startErr != nil {
+			if compensateErr := database.GetDB().Model(&model.Inbound{}).
+				Where("id = ?", inbound.Id).
+				Update("enable", false).Error; compensateErr != nil {
+				return inbound, false, errors.Join(
+					fmt.Errorf("GhostLink start failed: %w", startErr),
+					fmt.Errorf("mark inbound disabled after start failure: %w", compensateErr),
+				)
+			}
+			inbound.Enable = false
+			return inbound, false, fmt.Errorf("GhostLink start failed; inbound was saved disabled: %w", startErr)
+		}
+		return inbound, false, nil
+	}
 	if postCommitApply != nil {
 		postCommitApply()
 	}
@@ -1649,8 +1684,15 @@ func (s *InboundService) delInbound(id int) (bool, func(), error) {
 	var postCommitApply, nodePush func()
 	var ib model.Inbound
 	loadErr := db.Model(model.Inbound{}).Where("id = ?", id).First(&ib).Error
+	ghostLinkStopped := false
 	if loadErr == nil {
-		shouldPushToRuntime := ib.NodeID != nil || ib.Enable
+		if ib.Protocol == model.GhostLink {
+			if _, stopErr := s.stopGhostLink(); stopErr != nil {
+				return false, nil, fmt.Errorf("stop GhostLink before inbound delete: %w", stopErr)
+			}
+			ghostLinkStopped = true
+		}
+		shouldPushToRuntime := ib.Protocol != model.GhostLink && (ib.NodeID != nil || ib.Enable)
 		if shouldPushToRuntime {
 			if ib.NodeID != nil {
 				rt, push, _, perr := s.nodePushPlan(&ib)
@@ -1698,6 +1740,13 @@ func (s *InboundService) delInbound(id int) (bool, func(), error) {
 		}
 		return nil
 	}); err != nil {
+		if ghostLinkStopped && ib.Enable {
+			_, rollbackErr := s.reconcileGhostLinkInbound(context.Background(), &ib)
+			return false, nil, errors.Join(
+				fmt.Errorf("delete GhostLink inbound: %w", err),
+				rollbackErr,
+			)
+		}
 		return needRestart, nil, err
 	}
 	if postCommitApply != nil {
@@ -1896,6 +1945,9 @@ func (s *InboundService) SetInboundEnable(id int, enable bool) (bool, error) {
 	if err != nil {
 		return false, err
 	}
+	if inbound.Protocol == model.GhostLink {
+		return s.setGhostLinkInboundEnable(inbound, enable)
+	}
 	if inbound.Enable == enable {
 		return false, nil
 	}
@@ -1975,6 +2027,54 @@ func (s *InboundService) SetInboundEnable(id int, enable bool) (bool, error) {
 	return needRestart, nil
 }
 
+func (s *InboundService) setGhostLinkInboundEnable(inbound *model.Inbound, enable bool) (bool, error) {
+	db := database.GetDB()
+	if enable {
+		if err := ghostlink.RequireInstallation(); err != nil {
+			return false, err
+		}
+		conflict, err := checkPortConflictTx(db, inbound, inbound.Id)
+		if err != nil {
+			return false, err
+		}
+		if conflict != nil {
+			return false, common.NewError(conflict.String())
+		}
+	}
+	lifecycle, err := s.ghostLinkLifecycle(inbound)
+	if err != nil {
+		return false, err
+	}
+	candidate := *inbound
+	candidate.Enable = enable
+	if enable {
+		_, err = s.reconcileGhostLinkInbound(context.Background(), &candidate)
+	} else {
+		_, err = lifecycle.StopGhostLink(context.Background())
+	}
+	if err != nil {
+		return false, err
+	}
+	if inbound.Enable == enable {
+		return false, nil
+	}
+	if err := db.Model(&model.Inbound{}).
+		Where("id = ?", inbound.Id).
+		Update("enable", enable).Error; err != nil {
+		var compensateErr error
+		if enable {
+			_, compensateErr = lifecycle.StopGhostLink(context.Background())
+		} else {
+			_, compensateErr = s.reconcileGhostLinkInbound(context.Background(), inbound)
+		}
+		return false, errors.Join(
+			fmt.Errorf("persist GhostLink desired enable=%t: %w", enable, err),
+			compensateErr,
+		)
+	}
+	return false, nil
+}
+
 func (s *InboundService) validateUpdatedInboundClients(inbound, existing *model.Inbound) error {
 	clients, err := s.GetClients(inbound)
 	if err != nil {
@@ -2024,6 +2124,18 @@ func (s *InboundService) validateUpdatedInboundClients(inbound, existing *model.
 
 func (s *InboundService) UpdateInbound(inbound *model.Inbound) (*model.Inbound, bool, error) {
 	defer InvalidateSubData()
+	if err := validateGhostLinkInbound(inbound); err != nil {
+		return inbound, false, err
+	}
+	if stored, err := s.GetInbound(inbound.Id); err == nil &&
+		stored.Protocol == model.GhostLink && stored.Enable {
+		return inbound, false, errGhostLinkConfigurationLocked
+	}
+	if inbound.Protocol == model.GhostLink {
+		if err := checkGhostLinkSingletonTx(database.GetDB(), inbound.Id); err != nil {
+			return inbound, false, err
+		}
+	}
 	legacyShareAddr := legacyMtprotoShareAddr(inbound)
 	inbound.TrafficResetDay = normalizeTrafficResetDay(inbound.TrafficResetDay)
 	// Normalize streamSettings based on protocol
@@ -2127,6 +2239,14 @@ func (s *InboundService) UpdateInbound(inbound *model.Inbound) (*model.Inbound, 
 		if !s.FromNodeSync {
 			inbound.Settings = keepStoredClients(inbound.Settings, stored.Settings)
 			inbound.Enable = stored.Enable
+		}
+		if inbound.Protocol == model.GhostLink {
+			if inbound.Enable {
+				return errGhostLinkConfigurationLocked
+			}
+			if err := checkGhostLinkSingletonTx(tx, inbound.Id); err != nil {
+				return err
+			}
 		}
 		// On the clients actually saved: a protocol switch keeps the stored ones.
 		if err := s.validateUpdatedInboundClients(inbound, stored); err != nil {
@@ -2402,7 +2522,7 @@ func (s *InboundService) UpdateInbound(inbound *model.Inbound) (*model.Inbound, 
 // servedOutsideXray: these protocols run under their own manager, whose update
 // reconfigures in place where a Del+Add would drop every live session.
 func servedOutsideXray(protocol model.Protocol) bool {
-	return protocol == model.MTProto || protocol == model.TUIC || protocol == model.AmneziaWG
+	return protocol == model.MTProto || protocol == model.TUIC || protocol == model.AmneziaWG || protocol == model.GhostLink
 }
 
 // applyInboundUserOps reports whether per-user core ops moved running to next, so

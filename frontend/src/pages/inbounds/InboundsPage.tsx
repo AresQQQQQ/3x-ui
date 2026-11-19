@@ -47,6 +47,7 @@ const PromptModal = lazy(() => import('@/components/feedback/PromptModal'));
 
 import { useInbounds } from './useInbounds';
 import { InboundList } from './list';
+import { GhostLinkActivationBanner } from './form/protocols/GhostLinkActivation';
 import { LazyMount } from '@/components/utility';
 const InboundFormModal = lazy(() => import('./form/InboundFormModal'));
 const CloneInboundModal = lazy(() => import('./CloneInboundModal'));
@@ -747,6 +748,7 @@ export default function InboundsPage() {
                 />
               ) : (
                 <Row gutter={[isMobile ? 8 : 16, 12]}>
+                  <GhostLinkActivationBanner onOpenActivation={onAddInbound} />
                   <Col span={24}>
                     <Card size="small" hoverable className="summary-card">
                       <Row gutter={[16, 12]}>

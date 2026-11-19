@@ -121,6 +121,14 @@ func (s *ClientService) syncInboundClients(tx *gorm.DB, inboundId int, clients [
 	if err := tx.Select("protocol", "node_id").Where("id = ?", inboundId).Take(&inbound).Error; err != nil {
 		return err
 	}
+	if err := validateInboundAttachmentCompatibility(
+		tx,
+		inboundId,
+		inbound.Protocol,
+		clients,
+	); err != nil {
+		return err
+	}
 	if err := s.validateProtocolClients(tx, inbound.Protocol, inboundId, clients, detachEmails, prune); err != nil {
 		return err
 	}

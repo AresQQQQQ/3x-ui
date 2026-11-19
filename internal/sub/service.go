@@ -573,7 +573,10 @@ func (s *SubService) getSubs(subId string) ([]string, []string, int64, xray.Clie
 
 	seenEmails := make(map[string]struct{})
 	for _, inbound := range inbounds {
-		clients := s.matchingClients(inbound, subId)
+		clients, clientErr := s.matchingSubscriptionClients(inbound, subId)
+		if clientErr != nil {
+			return nil, nil, 0, traffic, clientErr
+		}
 		if len(clients) == 0 {
 			continue
 		}
@@ -582,6 +585,9 @@ func (s *SubService) getSubs(subId string) ([]string, []string, int64, xray.Clie
 				hasEnabledClient = true
 			}
 			continue
+		}
+		if inbound.Protocol == model.GhostLink {
+			return nil, nil, 0, traffic, ghostLinkUnsupportedFormat("standard subscription")
 		}
 		s.projectThroughFallbackMaster(inbound)
 		// Host overrides apply AFTER fallback projection so a host's
@@ -840,7 +846,7 @@ func (s *SubService) loadInboundsBySubId(subId string) ([]*model.Inbound, error)
 		JOIN client_inbounds ON client_inbounds.inbound_id = inbounds.id
 		JOIN clients ON clients.id = client_inbounds.client_id
 		WHERE
-			inbounds.protocol in ('vmess','vless','trojan','shadowsocks','hysteria','wireguard','amneziawg','mtproto','tuic','masque')
+			inbounds.protocol in ('vmess','vless','trojan','shadowsocks','hysteria','wireguard','amneziawg','mtproto','tuic','masque','ghostlink')
 			AND clients.sub_id = ? AND inbounds.enable = ?
 	)`, subId, true).Order("sub_sort_index ASC").Order("id ASC")
 	if cached {
@@ -871,7 +877,8 @@ func (s *SubService) subscriptionSettings(inbound *model.Inbound) (string, error
 		err := database.GetDB().Model(&model.Inbound{}).Select("settings").Where("id = ?", inbound.Id).Row().Scan(&settings)
 		return settings, err
 	}
-	if inbound.Protocol == model.WireGuard || inbound.Protocol == model.AmneziaWG || inbound.Protocol == model.TUIC {
+	if inbound.Protocol == model.WireGuard || inbound.Protocol == model.AmneziaWG ||
+		inbound.Protocol == model.TUIC || inbound.Protocol == model.GhostLink {
 		return load()
 	}
 	return s.settingsCache.settingsFor(inbound.Id, load)

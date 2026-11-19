@@ -21,6 +21,7 @@ import (
 	"github.com/mhsanaei/3x-ui/v3/internal/amneziawgnet"
 	"github.com/mhsanaei/3x-ui/v3/internal/config"
 	"github.com/mhsanaei/3x-ui/v3/internal/eventbus"
+	"github.com/mhsanaei/3x-ui/v3/internal/ghostlink"
 	"github.com/mhsanaei/3x-ui/v3/internal/logger"
 	"github.com/mhsanaei/3x-ui/v3/internal/mtproto"
 	"github.com/mhsanaei/3x-ui/v3/internal/tuic"
@@ -113,8 +114,9 @@ func EmbeddedDist() embed.FS {
 
 // Server represents the main web server for the 3x-ui panel with controllers, services, and scheduled jobs.
 type Server struct {
-	httpServer *http.Server
-	listener   net.Listener
+	ghostLinkController ghostlink.Controller
+	httpServer          *http.Server
+	listener            net.Listener
 
 	index *controller.IndexController
 	panel *controller.XUIController
@@ -306,6 +308,7 @@ const (
 	cadenceMtproto       = "@every 10s"
 	cadenceAmneziaWG     = "@every 10s"
 	cadenceTuic          = "@every 10s"
+	cadenceGhostLink     = "@every 10s"
 	cadenceClientIPScan  = "@every 10s"
 	cadenceNodeHeartbeat = "@every 5s"
 	cadenceNodeTraffic   = "@every 5s"
@@ -355,6 +358,10 @@ func (s *Server) startTask(restartXray bool, loc *time.Location) {
 	tuicJob := job.NewTuicJob()
 	_, _ = s.cron.AddJob(cadenceTuic, tuicJob)
 	go tuicJob.Run()
+
+	ghostLinkJob := job.NewGhostLinkJob(s.ctx)
+	_, _ = s.cron.AddJob(cadenceGhostLink, ghostLinkJob)
+	go ghostLinkJob.Run()
 
 	// check client ips from log file every 10 sec
 	_, _ = s.cron.AddJob(cadenceClientIPScan, job.NewCheckClientIpJob())
@@ -555,10 +562,12 @@ func (s *Server) start(restartXray bool, startTgBot bool) (err error) {
 	// add/update/delete to either the local xray or a remote node panel.
 	// The closures bridge into XrayService (which owns the running xray
 	// process state) without forcing the runtime package to import service.
+	s.ghostLinkController = ghostlink.NewDefaultController()
 	mgr := runtime.NewManager(runtime.LocalDeps{
 		APIPort:          func() int { return s.xrayService.GetXrayAPIPort() },
 		SetNeedRestart:   func() { s.xrayService.SetToNeedRestart() },
 		RequestReconcile: func() { s.xrayService.SetToNeedReconcile() },
+		GhostLink:        s.ghostLinkController,
 	})
 	runtime.SetManager(mgr)
 	mgr.SetNodeEgressResolver(&s.settingService)
@@ -797,11 +806,14 @@ func (s *Server) stop(stopXray bool, stopTgBot bool) error {
 	if s.cron != nil {
 		<-s.cron.Stop().Done()
 	}
+	ghostLinkCtx, ghostLinkCancel := context.WithTimeout(context.Background(), 8*time.Second)
+	err2 = ghostlink.ShutdownContainer(ghostLinkCtx, s.ghostLinkController)
+	ghostLinkCancel()
 	if stopXray {
 		tuic.GetManager().StopAll()
 		if err := job.NewTuicJob().FlushStoppedTraffic(); err != nil {
 			logger.Warning("persist final TUIC traffic on shutdown failed:", err)
-			err2 = err
+			err2 = common.Combine(err2, err)
 		}
 		mtproto.GetManager().StopAll()
 		amneziawgnet.GetManager().StopAll()

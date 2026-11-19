@@ -227,11 +227,16 @@ func (s *ClientService) List() ([]ClientWithAttachments, error) {
 	}
 
 	out := make([]ClientWithAttachments, 0, len(rows))
+	policies, err := loadGhostLinkClientPolicies(db, attachments)
+	if err != nil {
+		return nil, err
+	}
 	for i := range rows {
 		out = append(out, ClientWithAttachments{
-			ClientRecord: rows[i],
-			InboundIds:   attachments[rows[i].Id],
-			Traffic:      trafficByEmail[rows[i].Email],
+			ClientRecord:    rows[i],
+			InboundIds:      attachments[rows[i].Id],
+			Traffic:         trafficByEmail[rows[i].Email],
+			GhostLinkPolicy: policies[rows[i].Id],
 		})
 	}
 	return out, nil

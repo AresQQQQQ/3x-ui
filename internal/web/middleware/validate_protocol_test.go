@@ -16,3 +16,9 @@ func TestValidateAcceptsMasqueInboundProtocol(t *testing.T) {
 		t.Fatal("validate accepted an unknown protocol; the oneof no longer guards it")
 	}
 }
+
+func TestValidateAcceptsGhostLinkInboundProtocol(t *testing.T) {
+	if err := validate.StructPartial(model.Inbound{Protocol: model.GhostLink}, "Protocol"); err != nil {
+		t.Fatalf("validate rejected a GhostLink inbound: %v", err)
+	}
+}

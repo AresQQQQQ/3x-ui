@@ -1,0 +1,202 @@
+name: Sync 3x-ui upstream and build clean GhostLink image
+
+on:
+  schedule:
+    - cron: '47 3 * * *'
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: Publish a tested image or open an upstream merge conflict PR
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ghostlink-panel-upstream-sync
+  cancel-in-progress: false
+
+jobs:
+  merge-test:
+    if: github.ref_name == github.event.repository.default_branch && github.repository != 'mhsanaei/3x-ui'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    outputs:
+      tag: ${{ steps.detect.outputs.tag }}
+      revision: ${{ steps.detect.outputs.revision }}
+      version: ${{ steps.detect.outputs.version }}
+      result: ${{ steps.merge.outputs.result }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Detect latest stable upstream tag
+        id: detect
+        run: |
+          upstream=https://github.com/mhsanaei/3x-ui.git
+          refs="$(git ls-remote --refs --tags "$upstream")"
+          tag="$(awk '$2 ~ /^refs\/tags\/v[0-9]+\.[0-9]+\.[0-9]+$/ {sub("refs/tags/", "", $2); print $2}' <<<"$refs" | sort -V | tail -1)"
+          [[ "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          git fetch --no-tags "$upstream" "refs/tags/$tag"
+          revision="$(git rev-parse 'FETCH_HEAD^{commit}')"
+          version="$tag-ghostlink-${GITHUB_SHA:0:12}-${revision:0:12}"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "revision=$revision" >> "$GITHUB_OUTPUT"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          if [[ "$GITHUB_EVENT_NAME" == schedule ]] && git show-ref --verify --quiet "refs/tags/ghostlink-image/$version"; then
+            echo "current=true" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Merge upstream into an isolated runner checkout
+        if: steps.detect.outputs.current != 'true'
+        id: merge
+        env:
+          REVISION: ${{ steps.detect.outputs.revision }}
+        run: |
+          cp .github/scripts/merge-ghostlink-upstream.sh "$RUNNER_TEMP/merge.sh"
+          rc=0
+          bash "$RUNNER_TEMP/merge.sh" "$REVISION" "$RUNNER_TEMP/conflicts.txt" || rc=$?
+          case "$rc" in
+            0) echo "result=merged" >> "$GITHUB_OUTPUT" ;;
+            3)
+              echo "result=conflict" >> "$GITHUB_OUTPUT"
+              echo 'Upstream merge conflicts. Image publication stopped.' >> "$GITHUB_STEP_SUMMARY"
+              cat "$RUNNER_TEMP/conflicts.txt" >> "$GITHUB_STEP_SUMMARY"
+              ;;
+            *) exit "$rc" ;;
+          esac
+      - uses: actions/upload-artifact@v7
+        if: steps.merge.outputs.result == 'conflict'
+        with:
+          name: 3x-ui-merge-conflicts
+          path: ${{ runner.temp }}/conflicts.txt
+          if-no-files-found: error
+      - uses: actions/setup-go@v7
+        if: steps.merge.outputs.result == 'merged'
+        with:
+          go-version-file: go.mod
+      - uses: actions/setup-node@v7
+        if: steps.merge.outputs.result == 'merged'
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Test panel frontend and backend
+        if: steps.merge.outputs.result == 'merged'
+        env:
+          CGO_ENABLED: '1'
+        run: |
+          npm --prefix frontend ci
+          npm --prefix frontend test
+          npm --prefix frontend run build
+          go test -count=1 ./...
+      - name: Package the exact tested source tree
+        if: steps.merge.outputs.result == 'merged'
+        run: git archive --format=tar --output="$RUNNER_TEMP/tested-panel.tar" "$(git write-tree)"
+      - uses: actions/upload-artifact@v7
+        if: steps.merge.outputs.result == 'merged'
+        with:
+          name: 3x-ui-tested-source
+          path: ${{ runner.temp }}/tested-panel.tar
+          if-no-files-found: error
+          retention-days: 3
+      - name: Record circuit breaker
+        if: failure()
+        run: echo 'Panel sync stopped. Published images were preserved.' >> "$GITHUB_STEP_SUMMARY"
+
+  conflict-pr:
+    needs: merge-test
+    if: needs.merge-test.outputs.result == 'conflict' && (github.event_name == 'schedule' || inputs.publish)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: 3x-ui-merge-conflicts
+      - name: Open a conflict PR for the upstream commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+          UPSTREAM_TAG: ${{ needs.merge-test.outputs.tag }}
+          UPSTREAM_REVISION: ${{ needs.merge-test.outputs.revision }}
+          BASE: ${{ github.event.repository.default_branch }}
+        run: |
+          branch="automation/upstream-conflict/$UPSTREAM_TAG-${UPSTREAM_REVISION:0:12}"
+          refs="$(gh api --paginate "repos/$GITHUB_REPOSITORY/git/matching-refs/heads/automation/upstream-conflict" --jq '.[].ref')"
+          if ! grep -Fxq "refs/heads/$branch" <<<"$refs"; then
+            source="$(mktemp -d "$RUNNER_TEMP/conflict-source.XXXXXX")"
+            git init --bare "$source"
+            git -C "$source" fetch --no-tags https://github.com/mhsanaei/3x-ui.git "refs/tags/$UPSTREAM_TAG"
+            if [[ "$(git -C "$source" rev-parse 'FETCH_HEAD^{commit}')" != "$UPSTREAM_REVISION" ]]; then
+              echo 'Upstream tag changed since the merge check.' >&2
+              exit 1
+            fi
+            GIT_TERMINAL_PROMPT=0 git -C "$source" -c credential.helper= -c 'credential.helper=!gh auth git-credential' \
+              push "https://github.com/$GITHUB_REPOSITORY.git" "$UPSTREAM_REVISION:refs/heads/$branch"
+          fi
+          existing="$(gh pr list --repo "$GITHUB_REPOSITORY" --state open --head "$branch" --base "$BASE" --json number --jq 'length')"
+          if [[ "$existing" == 0 ]]; then
+            {
+              printf 'Merging 3x-ui %s into %s produced conflicts. Image publication stopped.\n\n' "$UPSTREAM_TAG" "$BASE"
+              sed 's/^/    /' conflicts.txt
+            } > "$RUNNER_TEMP/pr-body.md"
+            gh pr create --repo "$GITHUB_REPOSITORY" --head "$branch" --base "$BASE" --draft \
+              --title "Resolve 3x-ui $UPSTREAM_TAG merge conflicts" --body-file "$RUNNER_TEMP/pr-body.md"
+          fi
+
+  image:
+    needs: merge-test
+    if: needs.merge-test.outputs.result == 'merged'
+    runs-on: ubuntu-latest
+    timeout-minutes: 75
+    permissions:
+      contents: write
+      packages: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: 3x-ui-tested-source
+      - name: Extract tested panel source
+        run: |
+          mkdir panel
+          tar -xf tested-panel.tar -C panel
+      - uses: docker/setup-qemu-action@v4
+      - uses: docker/setup-buildx-action@v4
+      - name: Build and verify both platforms before publishing
+        run: |
+          for arch in amd64 arm64; do
+            docker buildx build --load --platform "linux/$arch" -t "ghostlink-panel:$arch" panel
+            docker run --rm --platform "linux/$arch" --entrypoint /bin/sh "ghostlink-panel:$arch" -ec '
+              test -x /app/x-ui
+              test ! -d /etc/x-ui/ghostlink
+              test -z "$(find /app -type f \( -name "ghostlinkd*" -o -name "license.lic" -o -name "activation.json" \) -print -quit)"
+            '
+          done
+      - uses: docker/login-action@v4
+        if: github.event_name == 'schedule' || inputs.publish
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+      - name: Publish multi-architecture image and mark validated version
+        if: github.event_name == 'schedule' || inputs.publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.merge-test.outputs.version }}
+        run: |
+          image="ghcr.io/${GITHUB_REPOSITORY,,}-ghostlink"
+          for arch in amd64 arm64; do
+            docker tag "ghostlink-panel:$arch" "$image:$VERSION-$arch"
+            docker push "$image:$VERSION-$arch"
+          done
+          docker buildx imagetools create -t "$image:$VERSION" -t "$image:latest" "$image:$VERSION-amd64" "$image:$VERSION-arm64"
+          refs="$(gh api --paginate "repos/$GITHUB_REPOSITORY/git/matching-refs/tags/ghostlink-image/$VERSION" --jq '.[].ref')"
+          if ! grep -Fxq "refs/tags/ghostlink-image/$VERSION" <<<"$refs"; then
+            gh api --method POST "repos/$GITHUB_REPOSITORY/git/refs" -f "ref=refs/tags/ghostlink-image/$VERSION" -f "sha=$GITHUB_SHA"
+          fi
+      - name: Record failed image validation
+        if: failure()
+        run: echo 'Panel image workflow failed. Inspect the failing step before retrying.' >> "$GITHUB_STEP_SUMMARY"

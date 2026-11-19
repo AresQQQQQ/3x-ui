@@ -40,6 +40,10 @@ import { MASQUE_DEFAULT_PATH } from '@/schemas/protocols/stream/masque';
 import { NODE_ELIGIBLE_PROTOCOLS } from '@/lib/xray/node-protocols';
 import { VLESS_AUTH_LABEL_KEYS, vlessEncryptionAuthKind } from '@/lib/xray/vless-encryption';
 import { SniffingSchema } from '@/schemas/primitives/sniffing';
+import {
+  GHOSTLINK_DEFAULT_LISTEN,
+  GHOSTLINK_DEFAULT_PORT,
+} from '@/schemas/protocols/inbound/ghostlink';
 import { TcpStreamSettingsSchema } from '@/schemas/protocols/stream/tcp';
 import { KcpStreamSettingsSchema } from '@/schemas/protocols/stream/kcp';
 import { WsStreamSettingsSchema } from '@/schemas/protocols/stream/ws';
@@ -53,9 +57,11 @@ import XDriveForm from '@/lib/xray/forms/transport/XDriveForm';
 import './InboundFormModal.css';
 
 import { AdvancedAllEditor, AdvancedSliceEditor } from './advanced-editors';
+import GhostLinkActivation from './protocols/GhostLinkActivation';
 import { formatInboundIssue, formatInboundValidation } from './formatValidationError';
 import {
   AmneziawgFields,
+  GhostLinkFields,
   HttpFields,
   HysteriaFields,
   MasqueSettingsFields,
@@ -87,7 +93,10 @@ import SniffingTab from './SniffingTab';
 import type { DBInbound } from '@/models/dbinbound';
 import type { NodeRecord } from '@/api/queries/useNodesQuery';
 
-const PROTOCOL_OPTIONS = Object.values(Protocols).map((p) => ({ value: p, label: p }));
+const PROTOCOL_OPTIONS = [
+  Protocols.GHOSTLINK,
+  ...Object.values(Protocols).filter((p) => p !== Protocols.GHOSTLINK),
+].map((p) => ({ value: p, label: p }));
 const SHARE_ADDR_STRATEGIES = ['node', 'listen', 'custom'] as const;
 const SHARE_ADDR_HOSTNAME_RE =
   /^[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?(\.[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?)*$/;
@@ -161,21 +170,20 @@ interface InboundFormModalProps {
 }
 
 function buildAddModeValues(): InboundFormValues {
-  const settings = createDefaultInboundSettings('vless') ?? undefined;
+  const settings = createDefaultInboundSettings(Protocols.GHOSTLINK) ?? undefined;
   return rawInboundToFormValues({
-    protocol: 'vless',
+    protocol: Protocols.GHOSTLINK,
     settings,
-    streamSettings: {
-      network: 'tcp',
-      security: 'none',
-      tcpSettings: TcpStreamSettingsSchema.parse({ header: { type: 'none' } }),
-    },
+    streamSettings: undefined,
     sniffing: SniffingSchema.parse({}),
-    port: RandomUtil.randomInteger(10000, 60000),
-    listen: '',
+    port: GHOSTLINK_DEFAULT_PORT,
+    listen: GHOSTLINK_DEFAULT_LISTEN,
     tag: '',
     enable: true,
+    total: 0,
+    expiryTime: 0,
     trafficReset: 'never',
+    trafficResetDay: 1,
   });
 }
 
@@ -221,7 +229,12 @@ export default function InboundFormModal({
   const uid = useId();
   const [messageApi, messageContextHolder] = message.useMessage();
   const [modal, modalContextHolder] = Modal.useModal();
-  const methods = useForm<InboundFormValues>({ defaultValues: buildAddModeValues() });
+  const methods = useForm<InboundFormValues>({
+    defaultValues:
+      mode === 'edit' && dbInbound
+        ? withoutClients(rawInboundToFormValues(dbInbound))
+        : buildAddModeValues(),
+  });
   const setV = methods.setValue as unknown as (name: string, value: unknown) => void;
   const getV = methods.getValues as unknown as (name?: string) => unknown;
   const control = methods.control;
@@ -246,6 +259,9 @@ export default function InboundFormModal({
 
   const selectableNodes = (availableNodes || []).filter((n) => n.enable);
   const protocol = (useWatch({ control, name: 'protocol' }) ?? '') as string;
+  const activationRequired = protocol === Protocols.GHOSTLINK;
+  const [ghostLinkReady, setGhostLinkReady] = useState(false);
+  const activationBlocked = activationRequired && !ghostLinkReady;
   const isNodeEligible = !!NODE_ELIGIBLE_PROTOCOLS[protocol];
   /*
    * The `node` share-address strategy only means something when the inbound can
@@ -277,7 +293,8 @@ export default function InboundFormModal({
     protocol !== Protocols.MASQUE &&
     protocol !== Protocols.WIREGUARD &&
     protocol !== Protocols.TUNNEL &&
-    protocol !== Protocols.TUIC;
+    protocol !== Protocols.TUIC &&
+    protocol !== Protocols.GHOSTLINK;
 
   const wPort = useWatch({ control, name: 'port' });
   const wListen = (useWatch({ control, name: 'listen' }) ?? '') as string;
@@ -555,10 +572,23 @@ export default function InboundFormModal({
         });
       } else if (next === Protocols.WIREGUARD || next === Protocols.TUNNEL) {
         setV('streamSettings', { security: 'none' });
+      } else if (next === Protocols.GHOSTLINK) {
+        setV('port', GHOSTLINK_DEFAULT_PORT);
+        setV('listen', GHOSTLINK_DEFAULT_LISTEN);
+        setV('streamSettings', undefined);
+        setV('sniffing', SniffingSchema.parse({}));
+        setV('total', 0);
+        setV('expiryTime', 0);
+        setV('trafficReset', 'never');
+        setV('trafficResetDay', 1);
       } else {
         const current = getV('streamSettings') as { network?: string } | undefined;
         if (current?.network === 'hysteria' || current?.network === 'masque' || !current?.network) {
-          setV('streamSettings', { network: 'tcp', security: 'none', tcpSettings: {} });
+          setV('streamSettings', {
+            network: 'tcp',
+            security: 'none',
+            tcpSettings: TcpStreamSettingsSchema.parse({ header: { type: 'none' } }),
+          });
         }
       }
     });
@@ -683,12 +713,16 @@ export default function InboundFormModal({
       <FormField
         name="listen"
         label={t('pages.inbounds.address')}
-        tooltip={t('pages.inbounds.form.listenHelp')}
+        tooltip={
+          protocol === Protocols.GHOSTLINK
+            ? t('pages.inbounds.form.ghostlink.listenHint')
+            : t('pages.inbounds.form.listenHelp')
+        }
       >
         <Input placeholder={t('pages.inbounds.monitorDesc')} />
       </FormField>
 
-      {protocol !== Protocols.MTPROTO && (
+      {protocol !== Protocols.MTPROTO && protocol !== Protocols.GHOSTLINK && (
         <>
           <FormField
             name="shareAddrStrategy"
@@ -722,22 +756,26 @@ export default function InboundFormModal({
         </>
       )}
 
-      <FormField
-        name="subSortIndex"
-        label={t('pages.inbounds.form.subSortIndex')}
-        tooltip={t('pages.inbounds.form.subSortIndexHelp')}
-      >
-        <InputNumber />
-      </FormField>
+      {protocol !== Protocols.GHOSTLINK && (
+        <>
+          <FormField
+            name="subSortIndex"
+            label={t('pages.inbounds.form.subSortIndex')}
+            tooltip={t('pages.inbounds.form.subSortIndexHelp')}
+          >
+            <InputNumber />
+          </FormField>
 
-      <FormField
-        name="excludeFromSub"
-        valueProp="checked"
-        label={t('pages.inbounds.form.excludeFromSub')}
-        tooltip={t('pages.inbounds.form.excludeFromSubHelp')}
-      >
-        <Switch />
-      </FormField>
+          <FormField
+            name="excludeFromSub"
+            valueProp="checked"
+            label={t('pages.inbounds.form.excludeFromSub')}
+            tooltip={t('pages.inbounds.form.excludeFromSubHelp')}
+          >
+            <Switch />
+          </FormField>
+        </>
+      )}
 
       {protocol === Protocols.VLESS && (
         <FormField
@@ -753,6 +791,9 @@ export default function InboundFormModal({
       <FormField
         name="port"
         label={t('pages.inbounds.port')}
+        tooltip={
+          protocol === Protocols.GHOSTLINK ? t('pages.inbounds.form.ghostlink.portHint') : undefined
+        }
         rules={{ validate: rhfZodValidate(InboundFormBaseSchema.shape.port) }}
       >
         <InputNumber min={isUdsListen ? 0 : 1} max={65535} />
@@ -846,6 +887,8 @@ export default function InboundFormModal({
       {protocol === Protocols.TUIC && <TuicFields />}
 
       {protocol === Protocols.MASQUE && <MasqueSettingsFields />}
+
+      {activationRequired && ghostLinkReady && <GhostLinkFields />}
 
       {protocol === Protocols.TUN && <TunFields />}
 
@@ -1185,11 +1228,13 @@ export default function InboundFormModal({
         confirmLoading={saving}
         mask={{ closable: false }}
         width={780}
-        onOk={submit}
+        onOk={activationBlocked ? undefined : submit}
+        okButtonProps={{ disabled: activationBlocked }}
         onCancel={onClose}
         destroyOnHidden
       >
         <FormProvider {...methods}>
+          {open && activationRequired && <GhostLinkActivation onReadyChange={setGhostLinkReady} />}
           <Form
             colon={false}
             labelCol={{ sm: { span: 8 } }}
@@ -1219,6 +1264,7 @@ export default function InboundFormModal({
                     Protocols.AMNEZIAWG,
                     Protocols.TUIC,
                     Protocols.MASQUE,
+                    Protocols.GHOSTLINK,
                   ] as string[]
                 ).includes(protocol) ||
                 isFallbackHost ||

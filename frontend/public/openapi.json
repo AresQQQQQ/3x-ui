@@ -5646,6 +5646,107 @@
         }
       }
     },
+    "/panel/api/inbounds/ghostlink/status": {
+      "get": {
+        "tags": [
+          "Inbounds"
+        ],
+        "summary": "Read the supervised GhostLink process state without secrets. Reports desired/active config and user revisions, TCP/H2 + UDP/H3 listen address, MainPID, authenticated runtime readiness, pending operations, usage state, and policy state. An API failure or revision mismatch must not be shown as healthy.",
+        "operationId": "get_panel_api_inbounds_ghostlink_status",
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "success": {
+                      "type": "boolean"
+                    },
+                    "msg": {
+                      "type": "string"
+                    },
+                    "obj": {}
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/panel/api/inbounds/ghostlink/activation": {
+      "get": {
+        "tags": [
+          "Inbounds"
+        ],
+        "summary": "Read local installation status and shortened host fingerprints.",
+        "operationId": "get_panel_api_inbounds_ghostlink_activation",
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "success": {
+                      "type": "boolean"
+                    },
+                    "msg": {
+                      "type": "string"
+                    },
+                    "obj": {}
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "Inbounds"
+        ],
+        "summary": "Submit a local GhostLink request to the configured License Hub.",
+        "operationId": "post_panel_api_inbounds_ghostlink_activation",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object"
+              },
+              "example": {
+                "note": "Optional note for the approver"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "success": {
+                      "type": "boolean"
+                    },
+                    "msg": {
+                      "type": "string"
+                    },
+                    "obj": {}
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/panel/api/inbounds/add": {
       "post": {
         "tags": [

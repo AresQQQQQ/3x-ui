@@ -87,6 +87,25 @@ func (s *ClientService) BulkAttach(inboundSvc *InboundService, emails []string, 
 			continue
 		}
 		seenInbound[ibId] = struct{}{}
+		eligibleRecords := make([]*model.ClientRecord, 0, len(records))
+		for _, rec := range records {
+			currentIDs, idErr := s.GetInboundIdsForRecord(rec.Id)
+			if idErr != nil {
+				return result, false, idErr
+			}
+			if mixErr := validateClientAttachmentCompatibility(
+				database.GetDB(),
+				append(append([]int(nil), currentIDs...), ibId),
+				rec.UUID,
+			); mixErr != nil {
+				recordErr("%s -> inbound %d: %v", rec.Email, ibId, mixErr)
+				continue
+			}
+			eligibleRecords = append(eligibleRecords, rec)
+		}
+		if len(eligibleRecords) == 0 {
+			continue
+		}
 		inbound, err := inboundSvc.GetInbound(ibId)
 		if err != nil {
 			recordErr("inbound %d: %v", ibId, err)
@@ -105,8 +124,8 @@ func (s *ClientService) BulkAttach(inboundSvc *InboundService, emails []string, 
 			have[strings.ToLower(c.Email)] = struct{}{}
 		}
 
-		clientsToAdd := make([]model.Client, 0, len(records))
-		for _, rec := range records {
+		clientsToAdd := make([]model.Client, 0, len(eligibleRecords))
+		for _, rec := range eligibleRecords {
 			if _, attached := have[strings.ToLower(rec.Email)]; attached {
 				result.Skipped = append(result.Skipped, rec.Email)
 				continue
@@ -367,6 +386,9 @@ func (s *ClientService) BulkAdjust(inboundSvc *InboundService, emails []string, 
 	}
 
 	db := database.GetDB()
+	if err := ensureNoEnabledGhostLinkForClientEmails(db, cleanEmails); err != nil {
+		return result, false, err
+	}
 
 	recordsByEmail, err := clientRecordsByEmail(db, cleanEmails)
 	if err != nil {
@@ -473,6 +495,9 @@ func (s *ClientService) BulkAdjust(inboundSvc *InboundService, emails []string, 
 	adTagIneligible := map[string]bool{}
 	execFailed := map[string]bool{}
 	adjustIds := sortedInboundIds(emailsByInbound)
+	if err := ensureNoEnabledGhostLinkInbounds(db, adjustIds); err != nil {
+		return result, false, err
+	}
 	adjustResults, adjustPanics := fanoutInboundResults(adjustIds, inboundFanoutConcurrency, func(i int) bulkInboundAdjustResult {
 		return s.bulkAdjustInboundClients(inboundSvc, adjustIds[i], emailsByInbound[adjustIds[i]], plan, flow, adTag)
 	})
@@ -898,6 +923,9 @@ func (s *ClientService) BulkDelete(inboundSvc *InboundService, emails []string, 
 	}
 
 	db := database.GetDB()
+	if err := ensureNoEnabledGhostLinkForClientEmails(db, cleanEmails); err != nil {
+		return result, false, err
+	}
 
 	recordsByEmail, err := clientRecordsByEmail(db, cleanEmails)
 	if err != nil {
@@ -1462,6 +1490,15 @@ func (s *ClientService) bulkCreate(inboundSvc *InboundService, payloads []Client
 		if !ok {
 			continue
 		}
+		if mixErr := validateClientAttachmentCompatibility(
+			db,
+			prep[idx].inboundIds,
+			prep[idx].client.ID,
+		); mixErr != nil {
+			failed[idx] = true
+			reason[idx] = mixErr.Error()
+			continue
+		}
 		for _, ibId := range prep[idx].inboundIds {
 			ib, _ := getIb(ibId)
 			if _, seen := byInbound[ibId]; !seen {
@@ -1577,6 +1614,9 @@ func (s *ClientService) BulkSetEnable(inboundSvc *InboundService, emails []strin
 	}
 
 	db := database.GetDB()
+	if err := ensureNoEnabledGhostLinkForClientEmails(db, cleanEmails); err != nil {
+		return result, false, err
+	}
 
 	recordsByEmail, err := clientRecordsByEmail(db, cleanEmails)
 	if err != nil {
@@ -1618,6 +1658,9 @@ func (s *ClientService) BulkSetEnable(inboundSvc *InboundService, emails []strin
 
 	needRestart := false
 	enableIds := sortedInboundIds(emailsByInbound)
+	if err := ensureNoEnabledGhostLinkInbounds(db, enableIds); err != nil {
+		return result, false, err
+	}
 	enableResults, enablePanics := fanoutInboundResults(enableIds, inboundFanoutConcurrency, func(i int) bulkSetEnableInboundResult {
 		return s.bulkSetEnableInboundClients(inboundSvc, enableIds[i], emailsByInbound[enableIds[i]], enable)
 	})

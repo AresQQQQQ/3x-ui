@@ -393,6 +393,14 @@ func (s *InboundService) autoRenewClients(tx *gorm.DB, mutationBatch *trafficMut
 		// A prepaid plan stops itself: once as many renewals have fired as the
 		// operator allowed, the client is left to expire like any other.
 		Where("reset_max <= 0 or reset_count < reset_max").
+		// GhostLink expiry/quota policy is not synchronized to the runtime yet.
+		// Do not let the Xray traffic job silently renew an identity owned by it.
+		Where(`NOT EXISTS (
+			SELECT 1 FROM clients c2
+			JOIN client_inbounds ci2 ON ci2.client_id = c2.id
+			JOIN inbounds i2 ON i2.id = ci2.inbound_id
+			WHERE c2.email = client_traffics.email AND i2.protocol = ?
+		)`, model.GhostLink).
 		Where("email IN (?)", tx.Table("client_inbounds ci").
 			Select("c.email").
 			Joins("JOIN clients c ON c.id = ci.client_id").
@@ -902,6 +910,13 @@ func (s *InboundService) propagateResetAllTrafficsToNodes() {
 func (s *InboundService) ResetInboundTraffic(id int) (bool, error) {
 	var inbound *model.Inbound
 	var quotaOff bool
+	probe, err := s.GetInbound(id)
+	if err != nil {
+		return false, err
+	}
+	if probe.Protocol == model.GhostLink && probe.Enable {
+		return false, errGhostLinkConfigurationLocked
+	}
 	if err := submitTrafficWrite(func() error {
 		db := database.GetDB()
 		var err error

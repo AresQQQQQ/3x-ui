@@ -4,18 +4,30 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 
 import ClientFormModal from '@/pages/clients/ClientFormModal';
 import { renderWithProviders } from './test-utils';
+import type { ClientRecord, InboundOption } from '@/hooks/useClients';
 
 // ClientFormModal reads server state via react-query (useFail2banStatusQuery),
 // so it needs a QueryClientProvider on top of the shared ThemeProvider wrapper.
-function renderModal() {
+function renderModal({
+  mode = 'add',
+  client = null,
+  inbounds = [],
+  attachedIds = [],
+}: {
+  mode?: 'add' | 'edit';
+  client?: ClientRecord | null;
+  inbounds?: InboundOption[];
+  attachedIds?: number[];
+} = {}) {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   renderWithProviders(
     <QueryClientProvider client={queryClient}>
       <ClientFormModal
         open
-        mode="add"
-        client={null}
-        inbounds={[]}
+        mode={mode}
+        client={client}
+        inbounds={inbounds}
+        attachedIds={attachedIds}
         save={vi.fn().mockResolvedValue(null)}
         onOpenChange={() => {}}
       />
@@ -69,5 +81,31 @@ describe('ClientFormModal credential tooltips', () => {
         'Credential used only by Hysteria clients. Trojan and Shadowsocks use the Password field instead.',
       );
     });
+  });
+
+  it('hides package auto-renew for GhostLink mixed with a password protocol', async () => {
+    renderModal({
+      mode: 'edit',
+      client: {
+        email: 'ghost-mixed@test',
+        subId: 'ghost-mixed-sub',
+        uuid: 'custom-client-01',
+        secret: '0123456789abcdef0123456789abcdef',
+        totalGB: 0,
+        expiryTime: 0,
+        enable: true,
+        inboundIds: [1, 2],
+      } as ClientRecord,
+      inbounds: [
+        { id: 1, protocol: 'ghostlink', enable: true, tag: 'gl', remark: 'GhostLink' },
+        { id: 2, protocol: 'shadowsocks', enable: true, tag: 'ss', remark: 'Shadowsocks' },
+      ] as InboundOption[],
+      attachedIds: [1, 2],
+    });
+
+    await waitFor(() => {
+      expect(document.body.textContent).toContain('Traffic Reset');
+    });
+    expect(document.body.textContent).not.toContain('Auto renewal');
   });
 });

@@ -563,6 +563,17 @@ export default function ClientsPage() {
     return out;
   }, [inbounds]);
 
+  const selectedHasGhostLink = useMemo(
+    () =>
+      selectedRowKeys.some((email) => {
+        const row = clients.find((client) => client.email === email);
+        return (row?.inboundIds || []).some(
+          (id) => inboundsById[id]?.protocol === 'ghostlink',
+        );
+      }),
+    [selectedRowKeys, clients, inboundsById],
+  );
+
   const protocolOptions = useMemo(() => {
     const values = new Set<string>(
       (inbounds || []).map((i) => i.protocol).filter((x): x is string => !!x),
@@ -1406,14 +1417,23 @@ export default function ClientsPage() {
                               {!isMobile && t('pages.clients.addClients')}
                             </Button>
                           ) : (
-                            <Tag
-                              color="blue"
-                              closable
-                              onClose={() => setSelectedRowKeys([])}
-                              style={{ marginInlineEnd: 0, padding: '4px 8px', fontSize: 13 }}
-                            >
-                              {t('pages.clients.selectedCount', { count: selectedRowKeys.length })}
-                            </Tag>
+                            <>
+                              <Tag
+                                color="blue"
+                                closable
+                                onClose={() => setSelectedRowKeys([])}
+                                style={{ marginInlineEnd: 0, padding: '4px 8px', fontSize: 13 }}
+                              >
+                                {t('pages.clients.selectedCount', {
+                                  count: selectedRowKeys.length,
+                                })}
+                              </Tag>
+                              {selectedHasGhostLink && (
+                                <Tag color="orange">
+                                  {t('pages.clients.ghostLink.bulkRestricted')}
+                                </Tag>
+                              )}
+                            </>
                           )}
                           <Dropdown
                             trigger={['click']}
@@ -1426,12 +1446,14 @@ export default function ClientsPage() {
                                         key: 'attach',
                                         icon: <UsergroupAddOutlined aria-hidden />,
                                         label: t('pages.clients.attach'),
+                                        disabled: selectedHasGhostLink,
                                         onClick: () => setBulkAttachOpen(true),
                                       },
                                       {
                                         key: 'detach',
                                         icon: <UsergroupDeleteOutlined aria-hidden />,
                                         label: t('pages.clients.detach'),
+                                        disabled: selectedHasGhostLink,
                                         danger: true,
                                         onClick: () => setBulkDetachOpen(true),
                                       },
@@ -1453,12 +1475,14 @@ export default function ClientsPage() {
                                         key: 'enable',
                                         icon: <CheckCircleOutlined aria-hidden />,
                                         label: t('pages.clients.enable'),
+                                        disabled: selectedHasGhostLink,
                                         onClick: () => onBulkSetEnable(true),
                                       },
                                       {
                                         key: 'disable',
                                         icon: <StopOutlined aria-hidden />,
                                         label: t('pages.clients.disable'),
+                                        disabled: selectedHasGhostLink,
                                         danger: true,
                                         onClick: () => onBulkSetEnable(false),
                                       },
@@ -1466,12 +1490,14 @@ export default function ClientsPage() {
                                         key: 'adjust',
                                         icon: <ClockCircleOutlined aria-hidden />,
                                         label: t('pages.clients.adjust'),
+                                        disabled: selectedHasGhostLink,
                                         onClick: () => setBulkAdjustOpen(true),
                                       },
                                       {
                                         key: 'subLinks',
                                         icon: <LinkOutlined aria-hidden />,
                                         label: t('pages.clients.subLinks'),
+                                        disabled: selectedHasGhostLink,
                                         onClick: () => setSubLinksOpen(true),
                                       },
                                     ]
@@ -1527,6 +1553,7 @@ export default function ClientsPage() {
                               danger
                               icon={<DeleteOutlined aria-hidden />}
                               onClick={onBulkDelete}
+                              disabled={selectedHasGhostLink}
                               style={{ marginInlineStart: 'auto' }}
                               aria-label={t('delete')}
                             >

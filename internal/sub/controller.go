@@ -39,6 +39,10 @@ func writeSubError(c *gin.Context, err error) {
 		c.Status(http.StatusNotFound)
 		return
 	}
+	if errors.Is(err, errGhostLinkMihomoOnly) {
+		c.String(http.StatusUnprocessableEntity, err.Error())
+		return
+	}
 	c.Status(http.StatusInternalServerError)
 }
 

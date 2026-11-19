@@ -1,6 +1,6 @@
 import { Fragment, useCallback, useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Button, Divider, Modal, Space, Tabs, Tag, Tooltip } from 'antd';
+import { Alert, Button, Divider, Modal, Space, Tabs, Tag, Tooltip } from 'antd';
 import { CopyOutlined, SyncOutlined, DeleteOutlined, DownloadOutlined } from '@ant-design/icons';
 
 import { HttpUtil, IntlUtil, SizeFormatter, ColorUtils, Wireguard } from '@/utils';
@@ -18,6 +18,7 @@ import {
 } from '@/lib/xray/inbound-link';
 import { inboundFromDb } from '@/lib/xray/inbound-from-db';
 import { withHostEndpoints } from '@/lib/hosts/host-link';
+import { buildInboundSubscriptionLinks } from '@/lib/inbounds/subscription-links';
 
 import {
   buildInboundInfo,
@@ -29,6 +30,7 @@ import {
   statsColor,
 } from './helpers';
 import type { ClientSetting, ClientStats, InboundInfo, InboundInfoModalProps } from './types';
+import GhostLinkStatusCard from './GhostLinkStatusCard';
 import './InboundInfoModal.css';
 
 const EMPTY_HOSTS: NonNullable<InboundInfoModalProps['hosts']> = [];
@@ -58,8 +60,6 @@ export default function InboundInfoModal({
   const [wireguardLinks, setWireguardLinks] = useState<string[][]>([]);
   const [amneziawgConfigs, setAmneziawgConfigs] = useState<string[][]>([]);
   const [amneziawgLinks, setAmneziawgLinks] = useState<string[][]>([]);
-  const [subLink, setSubLink] = useState('');
-  const [subJsonLink, setSubJsonLink] = useState('');
   const [refreshing, setRefreshing] = useState(false);
   const [clientIpsArray, setClientIpsArray] = useState<string[]>([]);
   const [clientIpsText, setClientIpsText] = useState('');
@@ -213,16 +213,6 @@ export default function InboundInfoModal({
       setAmneziawgLinks([]);
     }
 
-    if (clientSet?.subId) {
-      setSubLink((subSettings?.subURI || '') + clientSet.subId);
-      setSubJsonLink(
-        subSettings?.subJsonEnable ? (subSettings?.subJsonURI || '') + clientSet.subId : '',
-      );
-    } else {
-      setSubLink('');
-      setSubJsonLink('');
-    }
-
     setClientIpsArray([]);
     setClientIpsText('');
 
@@ -307,7 +297,18 @@ export default function InboundInfoModal({
   const encryptionLabel = (inbound?.settings?.encryption as string) || '';
   const serverNameLabel = inbound?.serverName || '';
   const showClientTab = !!clientSettings;
-  const showSubscriptionTab = !!(subSettings?.enable && clientSettings?.subId);
+  const isGhostLink = dbInbound?.protocol === Protocols.GHOSTLINK;
+  const subscriptionLinks = useMemo(
+    () =>
+      buildInboundSubscriptionLinks(dbInbound?.protocol || '', clientSettings?.subId, subSettings),
+    [clientSettings?.subId, dbInbound?.protocol, subSettings],
+  );
+  const subLink = subscriptionLinks.standard;
+  const subJsonLink = subscriptionLinks.json;
+  const subClashLink = subscriptionLinks.mihomo;
+  const showSubscriptionTab = isGhostLink
+    ? !!subClashLink
+    : !!(subSettings?.enable && clientSettings?.subId);
 
   if (!dbInbound || !inbound) {
     return (
@@ -572,28 +573,66 @@ export default function InboundInfoModal({
       {showSubscriptionTab && (
         <>
           <Divider>{t('subscription.title')}</Divider>
-          <div className="link-panel">
-            <div className="link-panel-header">
-              <Tag color="green">{t('subscription.title')}</Tag>
-              <Tooltip title={t('copy')}>
-                <Button
-                  size="small"
-                  icon={<CopyOutlined aria-hidden />}
-                  aria-label={t('copy')}
-                  onClick={() => copyText(subLink, t)}
-                />
-              </Tooltip>
+          {isGhostLink ? (
+            <>
+              <Alert
+                type={subClashLink ? 'warning' : 'error'}
+                showIcon
+                title={
+                  subClashLink
+                    ? t('pages.inbounds.ghostLinkStatus.mihomoRequired')
+                    : t('pages.clients.subLinksDisabled')
+                }
+                description={subClashLink ? undefined : t('pages.clients.subLinksDisabledHint')}
+              />
+              {subClashLink && (
+                <div className="link-panel">
+                  <div className="link-panel-header">
+                    <Tag color="gold">Mihomo</Tag>
+                    <Tooltip title={t('copy')}>
+                      <Button
+                        size="small"
+                        icon={<CopyOutlined aria-hidden />}
+                        aria-label={t('copy')}
+                        onClick={() => copyText(subClashLink, t)}
+                      />
+                    </Tooltip>
+                  </div>
+                  <a
+                    href={subClashLink}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="link-panel-anchor"
+                  >
+                    {subClashLink}
+                  </a>
+                </div>
+              )}
+            </>
+          ) : (
+            <div className="link-panel">
+              <div className="link-panel-header">
+                <Tag color="green">{t('subscription.title')}</Tag>
+                <Tooltip title={t('copy')}>
+                  <Button
+                    size="small"
+                    icon={<CopyOutlined aria-hidden />}
+                    aria-label={t('copy')}
+                    onClick={() => copyText(subLink, t)}
+                  />
+                </Tooltip>
+              </div>
+              <a
+                href={subLink}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="link-panel-anchor"
+              >
+                {subLink}
+              </a>
             </div>
-            <a
-              href={subLink}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="link-panel-anchor"
-            >
-              {subLink}
-            </a>
-          </div>
-          {subSettings?.subJsonEnable && subJsonLink && (
+          )}
+          {!isGhostLink && subSettings?.subJsonEnable && subJsonLink && (
             <div className="link-panel">
               <div className="link-panel-header">
                 <Tag color="green">JSON</Tag>
@@ -623,6 +662,7 @@ export default function InboundInfoModal({
 
   const inboundTab = (
     <>
+      {isGhostLink && <GhostLinkStatusCard active={open && isGhostLink} />}
       <dl className="info-list">
         <div className="info-row">
           <dt>{t('pages.inbounds.protocol')}</dt>

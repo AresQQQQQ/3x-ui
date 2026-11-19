@@ -23,7 +23,12 @@ RUN apk --no-cache --update add \
   curl \
   unzip
 
-COPY . .
+# Copy only panel build inputs. The runtime core comes from the License Hub.
+COPY go.mod go.sum main.go ./
+COPY internal/ ./internal/
+COPY DockerInit.sh DockerEntrypoint.sh x-ui.sh ./
+COPY scripts/install-amneziawg-kernel.sh ./scripts/
+RUN chmod +x DockerInit.sh
 COPY --from=frontend /src/internal/web/dist ./internal/web/dist
 
 ENV CGO_ENABLED=1

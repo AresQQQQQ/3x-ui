@@ -15,6 +15,7 @@ import (
 	"github.com/mhsanaei/3x-ui/v3/internal/amneziawgkern"
 	"github.com/mhsanaei/3x-ui/v3/internal/amneziawgnet"
 	"github.com/mhsanaei/3x-ui/v3/internal/database/model"
+	"github.com/mhsanaei/3x-ui/v3/internal/ghostlink"
 	"github.com/mhsanaei/3x-ui/v3/internal/logger"
 	"github.com/mhsanaei/3x-ui/v3/internal/mtproto"
 	"github.com/mhsanaei/3x-ui/v3/internal/tuic"
@@ -25,7 +26,34 @@ type LocalDeps struct {
 	APIPort          func() int
 	SetNeedRestart   func()
 	RequestReconcile func()
+	GhostLink        ghostlink.Controller
 }
+
+type ghostLinkUsageRuntime interface {
+	GhostLinkUsageSnapshot(ctx context.Context, inbound *model.Inbound) (ghostlink.UsageSnapshot, error)
+}
+
+type ghostLinkPolicyController interface {
+	ReconcileGhostLinkWithPolicies(context.Context, *model.Inbound, map[string]ghostlink.RuntimePolicy) (ghostlink.Status, error)
+	GhostLinkStatusWithPolicies(context.Context, *model.Inbound, map[string]ghostlink.RuntimePolicy) (ghostlink.Status, error)
+	ApplyUserPolicyConfig(
+		context.Context,
+		*model.Inbound,
+		*model.Inbound,
+		map[string]ghostlink.RuntimePolicy,
+		map[string]ghostlink.RuntimePolicy,
+		string,
+		string,
+	) (ghostlink.UserOperation, error)
+}
+
+var ErrGhostLinkLifecycleUnsupported = errors.New(
+	"GhostLink lifecycle controller is not configured",
+)
+
+var ErrGhostLinkUserHotSyncUnsupported = errors.New(
+	"GhostLink user changes require the serialized single-client service transaction",
+)
 
 type Local struct {
 	deps LocalDeps
@@ -64,7 +92,11 @@ func (l *Local) withAPI(fn func(api *xray.XrayAPI) error) error {
 	return fn(api)
 }
 
-func (l *Local) AddInbound(_ context.Context, ib *model.Inbound) error {
+func (l *Local) AddInbound(ctx context.Context, ib *model.Inbound) error {
+	if ib.Protocol == model.GhostLink {
+		_, err := l.ReconcileGhostLink(ctx, ib)
+		return err
+	}
 	if ib.Protocol == model.MTProto {
 		inst, ok := mtproto.InstanceFromInbound(ib)
 		if !ok {
@@ -108,7 +140,11 @@ func (l *Local) AddInbound(_ context.Context, ib *model.Inbound) error {
 	})
 }
 
-func (l *Local) DelInbound(_ context.Context, ib *model.Inbound) error {
+func (l *Local) DelInbound(ctx context.Context, ib *model.Inbound) error {
+	if ib.Protocol == model.GhostLink {
+		_, err := l.StopGhostLink(ctx)
+		return err
+	}
 	if ib.Protocol == model.MTProto {
 		mtproto.GetManager().Remove(ib.Id)
 		return nil
@@ -136,6 +172,10 @@ func (l *Local) DelInbound(_ context.Context, ib *model.Inbound) error {
 }
 
 func (l *Local) UpdateInbound(ctx context.Context, oldIb, newIb *model.Inbound) error {
+	if oldIb.Protocol == model.GhostLink || newIb.Protocol == model.GhostLink {
+		_, err := l.ReconcileGhostLink(ctx, newIb)
+		return err
+	}
 	if oldIb.Protocol == model.MTProto || newIb.Protocol == model.MTProto {
 		return l.updateMtprotoInbound(ctx, oldIb, newIb)
 	}
@@ -273,7 +313,161 @@ func (l *Local) updateTuicInbound(ctx context.Context, oldIb, newIb *model.Inbou
 	return tuic.GetManager().Ensure(inst)
 }
 
+// ReconcileGhostLink updates the one fixed OS-supervised GhostLink instance.
+// The controller owns all unit/path choices; Inbound fields can only provide
+// validated GhostLink protocol configuration.
+func (l *Local) ReconcileGhostLink(ctx context.Context, ib *model.Inbound) (ghostlink.Status, error) {
+	if l.deps.GhostLink == nil {
+		return ghostlink.Status{}, ErrGhostLinkLifecycleUnsupported
+	}
+	return l.deps.GhostLink.Reconcile(ctx, ib)
+}
+
+func (l *Local) StopGhostLink(ctx context.Context) (ghostlink.Status, error) {
+	if l.deps.GhostLink == nil {
+		return ghostlink.Status{}, ErrGhostLinkLifecycleUnsupported
+	}
+	return l.deps.GhostLink.Stop(ctx)
+}
+
+func (l *Local) GhostLinkStatus(ctx context.Context, ib *model.Inbound) (ghostlink.Status, error) {
+	if l.deps.GhostLink == nil {
+		return ghostlink.Status{}, ErrGhostLinkLifecycleUnsupported
+	}
+	return l.deps.GhostLink.Status(ctx, ib)
+}
+
+func (l *Local) GhostLinkUsageSnapshot(ctx context.Context, ib *model.Inbound) (ghostlink.UsageSnapshot, error) {
+	if l.deps.GhostLink == nil {
+		return ghostlink.UsageSnapshot{}, ErrGhostLinkLifecycleUnsupported
+	}
+	usage, ok := l.deps.GhostLink.(ghostLinkUsageRuntime)
+	if !ok {
+		return ghostlink.UsageSnapshot{}, errors.New("GhostLink controller does not support usage snapshots")
+	}
+	return usage.GhostLinkUsageSnapshot(ctx, ib)
+}
+
+func (l *Local) ReconcileGhostLinkWithPolicies(
+	ctx context.Context,
+	ib *model.Inbound,
+	policies map[string]ghostlink.RuntimePolicy,
+) (ghostlink.Status, error) {
+	controller, err := l.ghostLinkPolicyController()
+	if err != nil {
+		return ghostlink.Status{}, err
+	}
+	return controller.ReconcileGhostLinkWithPolicies(ctx, ib, policies)
+}
+
+func (l *Local) GhostLinkStatusWithPolicies(
+	ctx context.Context,
+	ib *model.Inbound,
+	policies map[string]ghostlink.RuntimePolicy,
+) (ghostlink.Status, error) {
+	controller, err := l.ghostLinkPolicyController()
+	if err != nil {
+		return ghostlink.Status{}, err
+	}
+	return controller.GhostLinkStatusWithPolicies(ctx, ib, policies)
+}
+
+func (l *Local) ApplyGhostLinkUserPolicyConfig(
+	ctx context.Context,
+	oldInbound *model.Inbound,
+	newInbound *model.Inbound,
+	oldPolicies map[string]ghostlink.RuntimePolicy,
+	newPolicies map[string]ghostlink.RuntimePolicy,
+	expectedRuntimeRevision string,
+	requestID string,
+) (ghostlink.UserOperation, error) {
+	controller, err := l.ghostLinkPolicyController()
+	if err != nil {
+		return ghostlink.UserOperation{}, err
+	}
+	return controller.ApplyUserPolicyConfig(
+		ctx,
+		oldInbound,
+		newInbound,
+		oldPolicies,
+		newPolicies,
+		expectedRuntimeRevision,
+		requestID,
+	)
+}
+
+func (l *Local) ghostLinkPolicyController() (ghostLinkPolicyController, error) {
+	if l.deps.GhostLink == nil {
+		return nil, ErrGhostLinkLifecycleUnsupported
+	}
+	controller, ok := l.deps.GhostLink.(ghostLinkPolicyController)
+	if !ok {
+		return nil, errors.New("GhostLink controller does not support runtime policy updates")
+	}
+	return controller, nil
+}
+
+func (l *Local) ApplyGhostLinkUserConfig(
+	ctx context.Context,
+	oldInbound *model.Inbound,
+	newInbound *model.Inbound,
+	expectedRuntimeRevision string,
+	requestID string,
+) (ghostlink.UserOperation, error) {
+	controller, err := l.ghostLinkUserOperationController()
+	if err != nil {
+		return ghostlink.UserOperation{}, err
+	}
+	return controller.ApplyUserConfig(ctx, oldInbound, newInbound, expectedRuntimeRevision, requestID)
+}
+
+func (l *Local) ConfirmGhostLinkUserConfig(ctx context.Context, operationID string) error {
+	controller, err := l.ghostLinkUserOperationController()
+	if err != nil {
+		return err
+	}
+	return controller.ConfirmUserConfig(ctx, operationID)
+}
+
+func (l *Local) RollbackGhostLinkUserConfig(ctx context.Context, operationID string) error {
+	controller, err := l.ghostLinkUserOperationController()
+	if err != nil {
+		return err
+	}
+	return controller.RollbackUserConfig(ctx, operationID)
+}
+
+func (l *Local) ResolvePendingGhostLinkUserConfig(ctx context.Context, desiredUserRevision string) (string, error) {
+	controller, err := l.ghostLinkUserOperationController()
+	if err != nil {
+		return "", err
+	}
+	return controller.ResolvePendingUserConfig(ctx, desiredUserRevision)
+}
+
+func (l *Local) PendingGhostLinkUserConfig(ctx context.Context) (ghostlink.PendingUserOperation, bool, error) {
+	controller, err := l.ghostLinkUserOperationController()
+	if err != nil {
+		return ghostlink.PendingUserOperation{}, false, err
+	}
+	return controller.PendingUserConfig(ctx)
+}
+
+func (l *Local) ghostLinkUserOperationController() (ghostlink.UserOperationController, error) {
+	if l.deps.GhostLink == nil {
+		return nil, ErrGhostLinkLifecycleUnsupported
+	}
+	controller, ok := l.deps.GhostLink.(ghostlink.UserOperationController)
+	if !ok {
+		return nil, errors.New("GhostLink controller does not support transactional user updates")
+	}
+	return controller, nil
+}
+
 func (l *Local) AddUser(_ context.Context, ib *model.Inbound, userMap map[string]any) error {
+	if ib.Protocol == model.GhostLink {
+		return ErrGhostLinkUserHotSyncUnsupported
+	}
 	if ib.Protocol == model.TUIC {
 		if l.deps.RequestReconcile != nil {
 			l.deps.RequestReconcile()
@@ -289,6 +483,9 @@ func (l *Local) AddUser(_ context.Context, ib *model.Inbound, userMap map[string
 }
 
 func (l *Local) RemoveUser(_ context.Context, ib *model.Inbound, email string) error {
+	if ib.Protocol == model.GhostLink {
+		return ErrGhostLinkUserHotSyncUnsupported
+	}
 	if ib.Protocol == model.TUIC {
 		if l.deps.RequestReconcile != nil {
 			l.deps.RequestReconcile()

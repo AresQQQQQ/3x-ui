@@ -17,7 +17,7 @@ import (
 func (s *InboundService) disableInvalidInbounds(tx *gorm.DB, mutationBatch *trafficMutationBatch) (bool, int64, error) {
 	now := time.Now().Unix() * 1000
 	var inbounds []model.Inbound
-	if err := tx.Where("((total > 0 and up + down >= total) or (expiry_time > 0 and expiry_time <= ?)) and enable = ? and node_id IS NULL", now, true).
+	if err := tx.Where("((total > 0 and up + down >= total) or (expiry_time > 0 and expiry_time <= ?)) and enable = ? and node_id IS NULL and protocol <> ?", now, true, model.GhostLink).
 		Find(&inbounds).Error; err != nil {
 		return false, 0, err
 	}
@@ -28,7 +28,7 @@ func (s *InboundService) disableInvalidInbounds(tx *gorm.DB, mutationBatch *traf
 	}
 
 	result := tx.Model(model.Inbound{}).
-		Where("((total > 0 and up + down >= total) or (expiry_time > 0 and expiry_time <= ?)) and enable = ? and node_id IS NULL", now, true).
+		Where("((total > 0 and up + down >= total) or (expiry_time > 0 and expiry_time <= ?)) and enable = ? and node_id IS NULL and protocol <> ?", now, true, model.GhostLink).
 		Update("enable", false)
 	err := result.Error
 	count := result.RowsAffected
@@ -108,7 +108,12 @@ func (s *InboundService) disableInvalidClients(tx *gorm.DB, mutationBatch *traff
 
 	var depletedRows []xray.ClientTraffic
 	err := tx.Model(xray.ClientTraffic{}).
-		Where(cond+" AND enable = ?", append(condArgs, true)...).
+		Where(cond+` AND enable = ? AND NOT EXISTS (
+			SELECT 1 FROM clients c2
+			JOIN client_inbounds ci2 ON ci2.client_id = c2.id
+			JOIN inbounds i2 ON i2.id = ci2.inbound_id
+			WHERE c2.email = client_traffics.email AND i2.protocol = ?
+		)`, append(condArgs, true, model.GhostLink)...).
 		Find(&depletedRows).Error
 	if err != nil {
 		return false, 0, nil, err

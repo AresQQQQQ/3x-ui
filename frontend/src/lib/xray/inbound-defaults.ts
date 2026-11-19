@@ -4,6 +4,7 @@ import { generateAwgObfuscation } from '@/lib/xray/amneziawg-obfuscation';
 import type { AmneziawgInboundSettings } from '@/schemas/protocols/inbound/amneziawg';
 import type { HttpInboundSettings } from '@/schemas/protocols/inbound/http';
 import type { HysteriaClient, HysteriaInboundSettings } from '@/schemas/protocols/inbound/hysteria';
+import type { GhostLinkInboundSettings } from '@/schemas/protocols/inbound/ghostlink';
 import {
   MASQUE_DEFAULT_ADDRESS_POOL,
   type MasqueInboundSettings,
@@ -347,6 +348,26 @@ export function createDefaultMasqueInboundSettings(): MasqueInboundSettings {
   return { clients: [], address: [...MASQUE_DEFAULT_ADDRESS_POOL] };
 }
 
+export function createDefaultGhostLinkInboundSettings(): GhostLinkInboundSettings {
+  return {
+    version: 1,
+    transportPreset: 'h2',
+    identityTls: {
+      serverName: 'www.speedtest.net',
+      clientId: 'node-client',
+      secret: '',
+      publicKey: '',
+      privateKey: '',
+      shortId: '',
+    },
+    certificateFile: '',
+    privateKeyFile: '',
+    serverName: '',
+    webBackendUrl: '',
+    clients: [],
+  };
+}
+
 export function createDefaultTuicInboundSettings(): TuicInboundSettings {
   return {
     server: {
@@ -385,7 +406,8 @@ export type AnyInboundSettings =
   | MtprotoInboundSettings
   | AmneziawgInboundSettings
   | TuicInboundSettings
-  | MasqueInboundSettings;
+  | MasqueInboundSettings
+  | GhostLinkInboundSettings;
 
 export function createDefaultInboundSettings(protocol: string): AnyInboundSettings | null {
   switch (protocol) {
@@ -417,6 +439,8 @@ export function createDefaultInboundSettings(protocol: string): AnyInboundSettin
       return createDefaultTuicInboundSettings();
     case 'masque':
       return createDefaultMasqueInboundSettings();
+    case 'ghostlink':
+      return createDefaultGhostLinkInboundSettings();
     default:
       return null;
   }

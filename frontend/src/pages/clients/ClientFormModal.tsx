@@ -1,6 +1,7 @@
 import { useEffect, useId, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import {
+  Alert,
   AutoComplete,
   Button,
   Col,
@@ -21,6 +22,7 @@ import {
 } from 'antd';
 import {
   DeleteOutlined,
+  EyeInvisibleOutlined,
   EyeOutlined,
   PlusOutlined,
   ReloadOutlined,
@@ -33,6 +35,15 @@ import { Controller, FormProvider, useForm, useWatch, useFieldArray } from 'reac
 import { HttpUtil, IntlUtil, RandomUtil, Wireguard } from '@/utils';
 import { formatInboundLabel } from '@/lib/inbounds/label';
 import { generateMtprotoSecret } from '@/lib/xray/inbound-defaults';
+import {
+  generateGhostLinkSecret,
+  hasGhostLinkMtprotoConflict,
+  hasGhostLinkUUIDProtocolMix,
+  isValidGhostLinkClientId,
+  isValidGhostLinkSecret,
+  isStandardXrayUUID,
+  withPreservedGhostLinkSecret,
+} from '@/lib/clients/ghostlink';
 import { normalizeClientIps, type ClientIpInfo } from '@/lib/clients/ip-log';
 import { resolveExternalLinkExpiry } from '@/lib/clients/external-link';
 import { useDatepicker } from '@/hooks/useDatepicker';
@@ -72,6 +83,7 @@ const MULTI_CLIENT_PROTOCOLS = new Set([
   'amneziawg',
   'tuic',
   'masque',
+  'ghostlink',
 ]);
 
 const CLIENT_FORM_MODAL_Z_INDEX = 1000;
@@ -298,6 +310,7 @@ export default function ClientFormModal({
   const [ipsLoading, setIpsLoading] = useState(false);
   const [ipsClearing, setIpsClearing] = useState(false);
   const [ipsModalOpen, setIpsModalOpen] = useState(false);
+  const [secretVisible, setSecretVisible] = useState(false);
   const {
     clientHwids,
     hwidsLoading,
@@ -353,6 +366,7 @@ export default function ClientFormModal({
     if (!open) return;
     setIpsModalOpen(false);
     setHwidsModalOpen(false);
+    setSecretVisible(false);
 
     if (isEdit && client) {
       const et = Number(client.expiryTime) || 0;
@@ -475,6 +489,22 @@ export default function ClientFormModal({
     return 'www.cloudflare.com';
   }, [inboundIds, inbounds]);
 
+  const selectedProtocols = useMemo(() => {
+    const selected = new Set(inboundIds || []);
+    return (inbounds || []).filter((row) => selected.has(row.id)).map((row) => row.protocol || '');
+  }, [inboundIds, inbounds]);
+
+  const showGhostLink = selectedProtocols.includes('ghostlink');
+  const ghostLinkMtprotoConflict = hasGhostLinkMtprotoConflict(selectedProtocols);
+  const ghostLinkUUIDProtocolMix = hasGhostLinkUUIDProtocolMix(selectedProtocols);
+  const ghostLinkUUIDInvalid = ghostLinkUUIDProtocolMix && !isStandardXrayUUID(uuid);
+  const showPasswordField =
+    !showGhostLink ||
+    selectedProtocols.some((protocol) =>
+      ['shadowsocks', 'trojan', 'tuic', 'masque'].includes(protocol),
+    );
+  const showAuthField = !showGhostLink || selectedProtocols.includes('hysteria');
+
   const ss2022Method = useMemo(() => {
     for (const id of inboundIds || []) {
       const ib = (inbounds || []).find((row) => row.id === id);
@@ -537,6 +567,11 @@ export default function ClientFormModal({
     methods.setValue('secret', generateMtprotoSecret(mtprotoDomain));
   }
 
+  function regenerateGhostLinkSecret() {
+    methods.setValue('secret', generateGhostLinkSecret());
+    setSecretVisible(true);
+  }
+
   useEffect(() => {
     // Only clear the flow once we actually have inbound options to judge
     // capability from. While the options list is momentarily empty (e.g. the
@@ -567,6 +602,12 @@ export default function ClientFormModal({
       methods.setValue('secret', generateMtprotoSecret(mtprotoDomain));
     }
   }, [showMtproto, secret, mtprotoDomain, methods]);
+
+  useEffect(() => {
+    if (showGhostLink && !isEdit && !secret) {
+      methods.setValue('secret', generateGhostLinkSecret());
+    }
+  }, [showGhostLink, isEdit, secret, methods]);
 
   const inboundOptions = useMemo(
     () =>
@@ -766,9 +807,29 @@ export default function ClientFormModal({
       messageApi.error(t(issue?.message ?? 'somethingWentWrong'));
       return;
     }
-    const expiryTime = values.delayedStart
-      ? -86400000 * (Number(values.delayedDays) || 0)
-      : values.expiryDate || 0;
+    if (ghostLinkMtprotoConflict) {
+      messageApi.error(t('pages.clients.ghostLink.mtprotoConflict'));
+      return;
+    }
+    if (showGhostLink) {
+      if (!isValidGhostLinkClientId(values.uuid)) {
+        messageApi.error(t('pages.clients.ghostLink.invalidClientId'));
+        return;
+      }
+      if ((!isEdit || values.secret !== '') && !isValidGhostLinkSecret(values.secret)) {
+        messageApi.error(t('pages.clients.ghostLink.invalidSecret'));
+        return;
+      }
+      if (ghostLinkUUIDProtocolMix && !isStandardXrayUUID(values.uuid)) {
+        messageApi.error(t('pages.clients.ghostLink.uuidRequired'));
+        return;
+      }
+    }
+    const expiryTime = showGhostLink
+      ? Math.max(0, Number(values.expiryDate) || 0)
+      : values.delayedStart
+        ? -86400000 * (Number(values.delayedDays) || 0)
+        : values.expiryDate || 0;
     const totalBytes = resolveTotalBytes(client ? (client.totalGB ?? 0) : null, values.totalGB);
     const clientPayload: Record<string, unknown> = {
       email: values.email.trim(),
@@ -785,10 +846,10 @@ export default function ClientFormModal({
         : [],
       totalGB: totalBytes,
       expiryTime,
-      reset: Number(values.reset) || 0,
-      resetDay: Number(values.resetDay) || 0,
-      resetWeekday: Number(values.resetWeekday) || 0,
-      resetMax: Number(values.resetMax) || 0,
+      reset: showGhostLink ? 0 : Number(values.reset) || 0,
+      resetDay: showGhostLink ? 0 : Number(values.resetDay) || 0,
+      resetWeekday: showGhostLink ? 0 : Number(values.resetWeekday) || 0,
+      resetMax: showGhostLink ? 0 : Number(values.resetMax) || 0,
       trafficReset: values.trafficReset || 'never',
       trafficResetDay: Number(values.trafficResetDay) || 1,
       limitIp: Number(values.limitIp) || 0,
@@ -851,6 +912,9 @@ export default function ClientFormModal({
       }
       clientPayload.secret = values.secret;
       clientPayload.adTag = adTag;
+    }
+    if (showGhostLink) {
+      withPreservedGhostLinkSecret(clientPayload, values.secret, isEdit);
     }
 
     const externalLinks: ExternalLinkInput[] = values.externalLinks
@@ -1061,7 +1125,7 @@ export default function ClientFormModal({
 
                       <Row gutter={16}>
                         <Col xs={24} md={12}>
-                          {delayedStart ? (
+                          {delayedStart && !showGhostLink ? (
                             <FormField
                               name="delayedDays"
                               label={t('pages.clients.expireDays')}
@@ -1084,22 +1148,24 @@ export default function ClientFormModal({
                             </Form.Item>
                           )}
                         </Col>
-                        <Col xs={12} md={6}>
-                          <Form.Item
-                            label={t('pages.clients.delayedStart')}
-                            htmlFor={`${uid}-delayed-start`}
-                          >
-                            <Switch
-                              id={`${uid}-delayed-start`}
-                              checked={delayedStart}
-                              onChange={(v) => {
-                                methods.setValue('delayedStart', v);
-                                if (v) methods.setValue('expiryDate', 0);
-                                else methods.setValue('delayedDays', 0);
-                              }}
-                            />
-                          </Form.Item>
-                        </Col>
+                        {!showGhostLink && (
+                          <Col xs={12} md={6}>
+                            <Form.Item
+                              label={t('pages.clients.delayedStart')}
+                              htmlFor={`${uid}-delayed-start`}
+                            >
+                              <Switch
+                                id={`${uid}-delayed-start`}
+                                checked={delayedStart}
+                                onChange={(v) => {
+                                  methods.setValue('delayedStart', v);
+                                  if (v) methods.setValue('expiryDate', 0);
+                                  else methods.setValue('delayedDays', 0);
+                                }}
+                              />
+                            </Form.Item>
+                          </Col>
+                        )}
                       </Row>
 
                       <Row gutter={16}>
@@ -1129,13 +1195,17 @@ export default function ClientFormModal({
                         )}
                       </Row>
 
-                      <ClientRenewalFields
-                        active={open}
-                        delayedStart={delayedStart}
-                        expiryTime={delayedStart ? -86400000 * (delayedDays || 0) : expiryDate || 0}
-                        resetCount={client?.traffic?.resetCount || 0}
-                        setExpiry={(expiry) => methods.setValue('expiryDate', expiry)}
-                      />
+                      {showPasswordField && !showGhostLink && (
+                        <ClientRenewalFields
+                          active={open}
+                          delayedStart={delayedStart}
+                          expiryTime={
+                            delayedStart ? -86400000 * (delayedDays || 0) : expiryDate || 0
+                          }
+                          resetCount={client?.traffic?.resetCount || 0}
+                          setExpiry={(expiry) => methods.setValue('expiryDate', expiry)}
+                        />
+                      )}
 
                       <Row gutter={16}>
                         <Col xs={24} md={12}>
@@ -1240,6 +1310,14 @@ export default function ClientFormModal({
                                 .includes(input.toLowerCase()),
                           }}
                         />
+                        {ghostLinkMtprotoConflict && (
+                          <Alert
+                            className="mt-12"
+                            type="error"
+                            showIcon
+                            title={t('pages.clients.ghostLink.mtprotoConflict')}
+                          />
+                        )}
                       </Form.Item>
 
                       <Form.Item>
@@ -1258,7 +1336,14 @@ export default function ClientFormModal({
                   label: t('pages.clients.tabCredentials'),
                   children: (
                     <>
-                      <Form.Item label={t('pages.clients.uuid')} htmlFor={`${uid}-uuid`}>
+                      <Form.Item
+                        label={
+                          showGhostLink
+                            ? t('pages.clients.ghostLink.clientId')
+                            : t('pages.clients.uuid')
+                        }
+                        htmlFor={`${uid}-uuid`}
+                      >
                         <Space.Compact style={{ display: 'flex' }}>
                           <Input
                             id={`${uid}-uuid`}
@@ -1272,31 +1357,96 @@ export default function ClientFormModal({
                             onClick={() => methods.setValue('uuid', RandomUtil.randomUUID())}
                           />
                         </Space.Compact>
+                        {showGhostLink && (
+                          <div className="hint">
+                            {ghostLinkUUIDProtocolMix
+                              ? t('pages.clients.ghostLink.uuidMixedHint')
+                              : t('pages.clients.ghostLink.clientIdHint')}
+                          </div>
+                        )}
+                        {ghostLinkUUIDInvalid && (
+                          <Alert
+                            className="mt-12"
+                            type="error"
+                            showIcon
+                            title={t('pages.clients.ghostLink.uuidRequired')}
+                          />
+                        )}
                       </Form.Item>
 
-                      <Form.Item
-                        htmlFor={`${uid}-password`}
-                        label={t('pages.clients.password')}
-                        tooltip={t('pages.clients.passwordDesc')}
-                      >
-                        <Space.Compact style={{ display: 'flex' }}>
-                          <Input
-                            id={`${uid}-password`}
-                            aria-describedby={`${uid}-password-hint`}
-                            value={password}
-                            style={{ flex: 1 }}
-                            onChange={(e) => methods.setValue('password', e.target.value)}
-                          />
-                          <Button
-                            aria-label={t('regenerate')}
-                            icon={<ReloadOutlined aria-hidden />}
-                            onClick={regeneratePassword}
-                          />
-                        </Space.Compact>
-                        <span id={`${uid}-password-hint`} hidden>
-                          {t('pages.clients.passwordDesc')}
-                        </span>
-                      </Form.Item>
+                      {showGhostLink && (
+                        <Form.Item
+                          htmlFor={`${uid}-ghostlink-secret`}
+                          label={t('pages.clients.ghostLink.secret')}
+                          extra={t('pages.clients.ghostLink.secretHint')}
+                          required={!isEdit}
+                        >
+                          <Space.Compact style={{ display: 'flex' }}>
+                            <Input
+                              id={`${uid}-ghostlink-secret`}
+                              type={secretVisible ? 'text' : 'password'}
+                              value={secret}
+                              autoComplete="new-password"
+                              style={{ flex: 1 }}
+                              onChange={(e) => methods.setValue('secret', e.target.value)}
+                            />
+                            <Tooltip
+                              title={
+                                secretVisible
+                                  ? t('pages.clients.ghostLink.hideSecret')
+                                  : t('pages.clients.ghostLink.showSecret')
+                              }
+                            >
+                              <Button
+                                aria-label={
+                                  secretVisible
+                                    ? t('pages.clients.ghostLink.hideSecret')
+                                    : t('pages.clients.ghostLink.showSecret')
+                                }
+                                icon={
+                                  secretVisible ? (
+                                    <EyeInvisibleOutlined aria-hidden />
+                                  ) : (
+                                    <EyeOutlined aria-hidden />
+                                  )
+                                }
+                                onClick={() => setSecretVisible((visible) => !visible)}
+                              />
+                            </Tooltip>
+                            <Button
+                              aria-label={t('regenerate')}
+                              icon={<ReloadOutlined aria-hidden />}
+                              onClick={regenerateGhostLinkSecret}
+                            />
+                          </Space.Compact>
+                        </Form.Item>
+                      )}
+
+                      {showAuthField && (
+                        <Form.Item
+                          htmlFor={`${uid}-password`}
+                          label={t('pages.clients.password')}
+                          tooltip={t('pages.clients.passwordDesc')}
+                        >
+                          <Space.Compact style={{ display: 'flex' }}>
+                            <Input
+                              id={`${uid}-password`}
+                              aria-describedby={`${uid}-password-hint`}
+                              value={password}
+                              style={{ flex: 1 }}
+                              onChange={(e) => methods.setValue('password', e.target.value)}
+                            />
+                            <Button
+                              aria-label={t('regenerate')}
+                              icon={<ReloadOutlined aria-hidden />}
+                              onClick={regeneratePassword}
+                            />
+                          </Space.Compact>
+                          <span id={`${uid}-password-hint`} hidden>
+                            {t('pages.clients.passwordDesc')}
+                          </span>
+                        </Form.Item>
+                      )}
 
                       <Form.Item
                         htmlFor={`${uid}-sub-id`}
@@ -1324,31 +1474,33 @@ export default function ClientFormModal({
                         </span>
                       </Form.Item>
 
-                      <Form.Item
-                        htmlFor={`${uid}-auth`}
-                        label={t('pages.clients.hysteriaAuth')}
-                        tooltip={t('pages.clients.hysteriaAuthDesc')}
-                      >
-                        <Space.Compact style={{ display: 'flex' }}>
-                          <Input
-                            id={`${uid}-auth`}
-                            aria-describedby={`${uid}-auth-hint`}
-                            value={auth}
-                            style={{ flex: 1 }}
-                            onChange={(e) => methods.setValue('auth', e.target.value)}
-                          />
-                          <Button
-                            aria-label={t('regenerate')}
-                            icon={<ReloadOutlined aria-hidden />}
-                            onClick={() =>
-                              methods.setValue('auth', RandomUtil.randomLowerAndNum(16))
-                            }
-                          />
-                        </Space.Compact>
-                        <span id={`${uid}-auth-hint`} hidden>
-                          {t('pages.clients.hysteriaAuthDesc')}
-                        </span>
-                      </Form.Item>
+                      {!showGhostLink && (
+                        <Form.Item
+                          htmlFor={`${uid}-auth`}
+                          label={t('pages.clients.hysteriaAuth')}
+                          tooltip={t('pages.clients.hysteriaAuthDesc')}
+                        >
+                          <Space.Compact style={{ display: 'flex' }}>
+                            <Input
+                              id={`${uid}-auth`}
+                              aria-describedby={`${uid}-auth-hint`}
+                              value={auth}
+                              style={{ flex: 1 }}
+                              onChange={(e) => methods.setValue('auth', e.target.value)}
+                            />
+                            <Button
+                              aria-label={t('regenerate')}
+                              icon={<ReloadOutlined aria-hidden />}
+                              onClick={() =>
+                                methods.setValue('auth', RandomUtil.randomLowerAndNum(16))
+                              }
+                            />
+                          </Space.Compact>
+                          <span id={`${uid}-auth-hint`} hidden>
+                            {t('pages.clients.hysteriaAuthDesc')}
+                          </span>
+                        </Form.Item>
+                      )}
 
                       {showFlow && (
                         <FormField name="flow" label={t('pages.clients.flow')}>

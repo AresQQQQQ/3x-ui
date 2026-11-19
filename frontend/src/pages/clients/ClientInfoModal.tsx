@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Button, Divider, Modal, Popover, Tag, Tooltip, message } from 'antd';
+import { Alert, Button, Divider, Modal, Popover, Tag, Tooltip, message } from 'antd';
 import {
   CopyOutlined,
   DownloadOutlined,
@@ -47,6 +47,7 @@ const INBOUND_PROTOCOL_COLORS: Record<string, string> = {
   mixed: 'lime',
   tunnel: 'orange',
   tuic: 'orange',
+  ghostlink: 'cyan',
 };
 
 const INBOUND_CHIP_LIMIT = 1;
@@ -186,7 +187,17 @@ export default function ClientInfoModal({
       ? subSettings.subClashURI + subId
       : '';
 
-  const showSubscription = !!(subSettings?.enable && client?.subId);
+  const isGhostLink = useMemo(
+    () =>
+      (client?.inboundIds || []).some(
+        (id) => inboundsById[id]?.protocol === 'ghostlink',
+      ),
+    [client?.inboundIds, inboundsById],
+  );
+  const showSubscription = !!(
+    client?.subId &&
+    (isGhostLink ? subSettings?.subClashEnable : subSettings?.enable)
+  );
   const wgInbounds = useMemo(
     () => findWireguardInbounds(client, inboundsById),
     [client, inboundsById],
@@ -327,9 +338,33 @@ export default function ClientInfoModal({
                 <tr>
                   <td>{t('status')}</td>
                   <td>
-                    <Tag color={client.enable ? 'green' : 'default'}>
-                      {client.enable ? t('enabled') : t('disabled')}
+                    <Tag
+                      color={
+                        client.ghostlinkPolicy
+                          ? client.ghostlinkPolicy.effectiveEnabled
+                            ? 'green'
+                            : 'red'
+                          : client.enable
+                            ? 'green'
+                            : 'default'
+                      }
+                    >
+                      {client.ghostlinkPolicy
+                        ? client.ghostlinkPolicy.effectiveEnabled
+                          ? t('enabled')
+                          : t('disabled')
+                        : client.enable
+                          ? t('enabled')
+                          : t('disabled')}
                     </Tag>
+                    {client.ghostlinkPolicy && (
+                      <>
+                        <Tag color={client.ghostlinkPolicy.effectiveEnabled ? 'green' : 'orange'}>
+                          {client.ghostlinkPolicy.policyState || 'uninitialized'}
+                        </Tag>
+                        <Tag>{client.ghostlinkPolicy.usageState || 'uninitialized'}</Tag>
+                      </>
+                    )}
                   </td>
                 </tr>
                 <tr>
@@ -359,7 +394,11 @@ export default function ClientInfoModal({
                 </tr>
                 {client.uuid && (
                   <tr>
-                    <td>{t('pages.clients.uuid')}</td>
+                    <td>
+                      {isGhostLink
+                        ? t('pages.clients.ghostLink.clientId')
+                        : t('pages.clients.uuid')}
+                    </td>
                     <td>
                       <Tag className="info-large-tag">{client.uuid}</Tag>
                       <Button
@@ -571,64 +610,84 @@ export default function ClientInfoModal({
               </tbody>
             </table>
 
-            {showSubscription && subLink && (
+            {isGhostLink && client.subId && !subSettings?.subClashEnable && (
+              <Alert
+                type="error"
+                showIcon
+                title={t('pages.clients.subLinksDisabled')}
+                description={t('pages.clients.subLinksDisabledHint')}
+                style={{ marginTop: 12 }}
+              />
+            )}
+
+            {showSubscription && (isGhostLink ? subClashLink : subLink) && (
               <>
                 <Divider>{t('subscription.title')}</Divider>
-                <div className="link-row">
-                  <Tag color="green" className="link-row-tag">
-                    SUB
-                  </Tag>
-                  <a
-                    href={subLink}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="link-row-title link-row-title-anchor"
-                    title={subLink}
-                  >
-                    {client.subId}
-                  </a>
-                  <div className="link-row-actions">
-                    <Tooltip title={t('copy')}>
-                      <Button
-                        size="small"
-                        icon={<CopyOutlined aria-hidden />}
-                        aria-label={t('copy')}
-                        onClick={() => copyValue(subLink)}
-                      />
-                    </Tooltip>
-                    <Tooltip title={t('download')}>
-                      <Button
-                        size="small"
-                        icon={<DownloadOutlined aria-hidden />}
-                        aria-label={t('download')}
-                        loading={downloadingFormat === 'standard'}
-                        disabled={downloadingFormat !== null}
-                        onClick={() => void downloadSubscription(subLink, 'standard')}
-                      />
-                    </Tooltip>
-                    <Popover
-                      trigger="click"
-                      placement="left"
-                      destroyOnHidden
-                      content={
-                        <QrPanel
-                          value={subLink}
-                          remark={`${client.email} — ${t('subscription.title')}`}
-                          size={220}
-                        />
-                      }
+                {isGhostLink && (
+                  <Alert
+                    type="warning"
+                    showIcon
+                    title={t('pages.inbounds.ghostLinkStatus.mihomoRequired')}
+                    style={{ marginBottom: 12 }}
+                  />
+                )}
+                {!isGhostLink && subLink && (
+                  <div className="link-row">
+                    <Tag color="green" className="link-row-tag">
+                      SUB
+                    </Tag>
+                    <a
+                      href={subLink}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="link-row-title link-row-title-anchor"
+                      title={subLink}
                     >
-                      <Tooltip title={t('pages.clients.qrCode')}>
+                      {client.subId}
+                    </a>
+                    <div className="link-row-actions">
+                      <Tooltip title={t('copy')}>
                         <Button
                           size="small"
-                          icon={<QrcodeOutlined aria-hidden />}
-                          aria-label={t('pages.clients.qrCode')}
+                          icon={<CopyOutlined aria-hidden />}
+                          aria-label={t('copy')}
+                          onClick={() => copyValue(subLink)}
                         />
                       </Tooltip>
-                    </Popover>
+                      <Tooltip title={t('download')}>
+                        <Button
+                          size="small"
+                          icon={<DownloadOutlined aria-hidden />}
+                          aria-label={t('download')}
+                          loading={downloadingFormat === 'standard'}
+                          disabled={downloadingFormat !== null}
+                          onClick={() => void downloadSubscription(subLink, 'standard')}
+                        />
+                      </Tooltip>
+                      <Popover
+                        trigger="click"
+                        placement="left"
+                        destroyOnHidden
+                        content={
+                          <QrPanel
+                            value={subLink}
+                            remark={`${client.email} — ${t('subscription.title')}`}
+                            size={220}
+                          />
+                        }
+                      >
+                        <Tooltip title={t('pages.clients.qrCode')}>
+                          <Button
+                            size="small"
+                            icon={<QrcodeOutlined aria-hidden />}
+                            aria-label={t('pages.clients.qrCode')}
+                          />
+                        </Tooltip>
+                      </Popover>
+                    </div>
                   </div>
-                </div>
-                {subJsonLink && (
+                )}
+                {!isGhostLink && subJsonLink && (
                   <div className="link-row">
                     <Tag color="purple" className="link-row-tag">
                       JSON

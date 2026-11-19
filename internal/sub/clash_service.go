@@ -62,7 +62,10 @@ func (s *SubClashService) getClash(subId string, host string, legacy bool) (stri
 
 	seenEmails := make(map[string]struct{})
 	for _, inbound := range inbounds {
-		clients := subReq.matchingClients(inbound, subId)
+		clients, clientErr := subReq.matchingSubscriptionClients(inbound, subId)
+		if clientErr != nil {
+			return "", "", clientErr
+		}
 		if len(clients) == 0 {
 			continue
 		}
@@ -240,6 +243,13 @@ func legacyClashProxy(proxy map[string]any) map[string]any {
 	var fields []string
 	var cipher string
 	switch proxyType {
+	case "ghostlink":
+		fields = []string{
+			"name", "type", "server", "port", "transport", "client-id", "secret", "server-name", "sni",
+			"ca-file", "h2-scale-threshold", "h2-idle-timeout-seconds",
+			"early-data", "enable-udp-capsule", "failover-cooldown-seconds", "max-udp-associations",
+			"identity-client-id", "identity-secret", "identity-public-key", "identity-short-id",
+		}
 	case "vmess":
 		if !legacyClashNetwork(network) || !legacyVmessCipher(proxy["cipher"]) {
 			return nil
@@ -447,6 +457,9 @@ func (s *SubClashService) getProxies(subReq *SubService, inbound *model.Inbound,
 }
 
 func (s *SubClashService) buildProxy(subReq *SubService, inbound *model.Inbound, client model.Client, stream map[string]any, ep map[string]any) map[string]any {
+	if inbound.Protocol == model.GhostLink {
+		return s.buildGhostLinkProxy(subReq, inbound, client, ep)
+	}
 	// Hysteria has its own transport + TLS model, applyTransport /
 	// applySecurity don't fit.
 	if inbound.Protocol == model.Hysteria {
@@ -521,6 +534,41 @@ func (s *SubClashService) buildProxy(subReq *SubService, inbound *model.Inbound,
 		return nil
 	}
 
+	return proxy
+}
+
+func (s *SubClashService) buildGhostLinkProxy(
+	subReq *SubService,
+	inbound *model.Inbound,
+	client model.Client,
+	ep map[string]any,
+) map[string]any {
+	server := strings.Trim(strings.TrimSpace(inbound.Listen), "[]")
+	if server == "" || server == "0.0.0.0" || server == "::" || server == "::0" ||
+		listenIsInternalOnly(server) {
+		server = strings.Trim(subReq.resolveInboundAddress(inbound), "[]")
+	}
+	if server == "" || server == "0.0.0.0" || server == "::" || server == "::0" ||
+		inbound.Port < 1 || inbound.Port > 65535 ||
+		client.ID == "" || client.Secret == "" {
+		return nil
+	}
+
+	settings, err := ghostLinkMihomoSettings(inbound)
+	if err != nil {
+		return nil
+	}
+	proxy := map[string]any{
+		"name":      subReq.endpointRemark(inbound, client.Email, ep, ""),
+		"type":      "ghostlink",
+		"server":    server,
+		"port":      inbound.Port,
+		"client-id": client.ID,
+		"secret":    client.Secret,
+	}
+	for key, value := range settings {
+		proxy[key] = value
+	}
 	return proxy
 }
 

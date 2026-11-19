@@ -1,0 +1,25 @@
+proxies:
+- client-id: test-client-id-01
+  early-data: true
+  enable-udp-capsule: true
+  h2-scale-threshold: 4
+  identity-client-id: node-client
+  identity-public-key: B6N8vBQgk8i3VdwbEOhstCY3StFqqFPtC9_AsrhtHHw
+  identity-secret: ghostlink-node-identity-secret-32
+  identity-short-id: 00112233aabbccdd
+  name: GhostLink-ghost@example.test
+  port: 24443
+  secret: 0123456789abcdef0123456789abcdef0123456789abcdef
+  server: sub.example.com
+  server-name: edge.example.com
+  sni: www.speedtest.net
+  transport: h2-capsule
+  type: ghostlink
+proxy-groups:
+- name: PROXY
+  proxies:
+  - GhostLink-ghost@example.test
+  - DIRECT
+  type: select
+rules:
+- MATCH,PROXY

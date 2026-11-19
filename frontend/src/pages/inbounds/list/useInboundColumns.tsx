@@ -8,6 +8,7 @@ import { InfinityIcon } from '@/components/ui';
 import { useDatepicker } from '@/hooks/useDatepicker';
 import type { NodeRecord } from '@/api/queries/useNodesQuery';
 import { coerceInboundJsonField } from '@/models/dbinbound';
+import { Protocols } from '@/schemas/primitives';
 
 import { RowActionsCell } from './RowActions';
 import {
@@ -93,7 +94,8 @@ export function useInboundColumns({
         .map((client) => client.email!);
       return {
         clients: clients.length,
-        active,
+        active: record.protocol === Protocols.GHOSTLINK ? [] : active,
+        configEnabled: record.protocol === Protocols.GHOSTLINK ? active : [],
         deactive,
         depleted: [],
         expiring: [],
@@ -299,7 +301,29 @@ export function useInboundColumns({
               >
                 <TeamOutlined aria-hidden /> {cc.clients}
               </Tag>
-              {cc.active.length > 0 ? (
+              {cc.configEnabled.length > 0 ? (
+                <Popover
+                  title={t('pages.inbounds.configEnabled')}
+                  content={
+                    <>
+                      <div className="hint">{t('pages.inbounds.configEnabledHint')}</div>
+                      <div className="client-email-list">
+                        {cc.configEnabled.map((e) => (
+                          <div key={e}>{e}</div>
+                        ))}
+                      </div>
+                    </>
+                  }
+                >
+                  <Tag
+                    color="orange"
+                    className="client-count-tag"
+                    style={{ margin: 0, marginRight: 4, padding: '0 2px' }}
+                  >
+                    {cc.configEnabled.length}
+                  </Tag>
+                </Popover>
+              ) : record.protocol === Protocols.GHOSTLINK ? null : cc.active.length > 0 ? (
                 <Popover
                   title={t('subscription.active')}
                   content={

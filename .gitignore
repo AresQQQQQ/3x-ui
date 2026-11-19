@@ -39,6 +39,14 @@ x-ui.db-wal
 system_metrics.gob
 *.dump
 
+# GhostLink runtime and activation state
+**/ghostlinkd
+**/ghostlinkd.new
+**/ghostlinkd-linux-*
+**/license.lic
+**/activation.json
+**/.ghostlinkd-download-*
+
 # Ignore Docker specific files
 docker-compose.override.yml
 

@@ -13,6 +13,7 @@ import (
 	"github.com/mhsanaei/3x-ui/v3/internal/amneziawgkern"
 	"github.com/mhsanaei/3x-ui/v3/internal/database"
 	"github.com/mhsanaei/3x-ui/v3/internal/database/model"
+	"github.com/mhsanaei/3x-ui/v3/internal/ghostlink"
 	"github.com/mhsanaei/3x-ui/v3/internal/logger"
 	"github.com/mhsanaei/3x-ui/v3/internal/util/common"
 	"github.com/mhsanaei/3x-ui/v3/internal/util/random"
@@ -280,6 +281,11 @@ func (s *ClientService) delInboundClients(inboundSvc *InboundService, inboundId 
 	}); txErr != nil {
 		return needRestart, txErr
 	}
+	if oldInbound.Protocol == model.GhostLink {
+		// GhostLink users are never forwarded to Xray's inbound-tag user API.
+		// Batch changes remain rejected by the service boundary before this path.
+		return false, nil
+	}
 
 	// Resolve the node push plan once for the whole batch instead of per email.
 	var nodeRt runtime.Runtime
@@ -403,15 +409,15 @@ func (s *ClientService) AddInboundClient(inboundSvc *InboundService, data *model
 	defer InvalidateSubData()
 	defer lockInbound(data.Id).Unlock()
 
+	inbound, err := inboundSvc.GetInbound(data.Id)
+	if err != nil {
+		return false, err
+	}
 	clients, err := inboundSvc.GetClients(data)
 	if err != nil {
 		return false, err
 	}
 	if err := validateClientsRenewal(clients); err != nil {
-		return false, err
-	}
-	inbound, err := inboundSvc.GetInbound(data.Id)
-	if err != nil {
 		return false, err
 	}
 	existingClients, err := inboundSvc.GetClients(inbound)
@@ -451,9 +457,30 @@ func (s *ClientService) AddInboundClient(inboundSvc *InboundService, data *model
 		return false, common.NewError("Duplicate email:", existEmail)
 	}
 
-	oldInbound, err := inboundSvc.GetInbound(data.Id)
-	if err != nil {
-		return false, err
+	oldInbound := inbound
+	if oldInbound.Protocol == model.GhostLink && oldInbound.Enable && len(clients) != 1 {
+		return false, common.NewError("GhostLink single-client add requires exactly one client while the inbound is enabled")
+	}
+	for _, client := range clients {
+		currentIDs, idErr := s.GetInboundIdsForEmail(database.GetDB(), client.Email)
+		if idErr != nil {
+			return false, idErr
+		}
+		effectiveID, idErr := effectiveAttachmentClientID(
+			database.GetDB(),
+			client.Email,
+			client.ID,
+		)
+		if idErr != nil {
+			return false, idErr
+		}
+		if compatibilityErr := validateClientAttachmentCompatibility(
+			database.GetDB(),
+			append(currentIDs, data.Id),
+			effectiveID,
+		); compatibilityErr != nil {
+			return false, fmt.Errorf("client %q: %w", client.Email, compatibilityErr)
+		}
 	}
 	if err := validateTuicClientEmails(oldInbound.Protocol, clients); err != nil {
 		return false, err
@@ -564,6 +591,10 @@ func (s *ClientService) AddInboundClient(inboundSvc *InboundService, data *model
 			if client.Email == "" {
 				return false, common.NewError("empty client email")
 			}
+		case model.GhostLink:
+			if err := ghostlink.ValidateClient(&client); err != nil {
+				return false, common.NewError("ghostlink client:", err)
+			}
 		default:
 			if client.ID == "" {
 				return false, common.NewError("empty client ID")
@@ -597,6 +628,7 @@ func (s *ClientService) AddInboundClient(inboundSvc *InboundService, data *model
 		return false, err
 	}
 
+	oldSnapshot := *oldInbound
 	prevSettings := oldInbound.Settings
 	oldInbound.Settings = string(newSettings)
 
@@ -616,7 +648,7 @@ func (s *ClientService) AddInboundClient(inboundSvc *InboundService, data *model
 
 	// Persist client stats + inbound atomically, serialized against the traffic
 	// poll to avoid the cross-transaction lock-order deadlock (runSerializedTx).
-	if txErr := runSerializedTx(func(tx *gorm.DB) error {
+	commitTx := func(tx *gorm.DB) error {
 		// lockInbound is per-inbound, so the pre-tx cross-inbound checks race
 		// concurrent writers on other inbounds — re-run them in here (#6225).
 		if oldInbound.Protocol == model.WireGuard || oldInbound.Protocol == model.AmneziaWG {
@@ -663,12 +695,21 @@ func (s *ClientService) AddInboundClient(inboundSvc *InboundService, data *model
 			return (&NodeService{}).MarkNodeDirtyTx(tx, *oldInbound.NodeID)
 		}
 		return nil
-	}); txErr != nil {
+	}
+	if oldSnapshot.Protocol == model.GhostLink && oldSnapshot.Enable {
+		return s.applyGhostLinkSingleClientChange(inboundSvc, &oldSnapshot, oldInbound, commitTx)
+	}
+	if txErr := runSerializedTx(commitTx); txErr != nil {
 		return false, txErr
 	}
 
 	// Apply to the running runtime after commit — outside the serialized writer
 	// so a slow node call can't stall traffic accounting.
+	if oldInbound.Protocol == model.GhostLink {
+		// A disabled GhostLink inbound is persisted as desired state only. The
+		// next enable starts the fixed supervisor without touching Xray.
+		return false, nil
+	}
 	if oldInbound.NodeID == nil {
 		if !push {
 			needRestart = true
@@ -749,9 +790,37 @@ func (s *ClientService) UpdateInboundClient(inboundSvc *InboundService, data *mo
 	defer InvalidateSubData()
 	defer lockInbound(data.Id).Unlock()
 
+	oldInbound, err := inboundSvc.GetInbound(data.Id)
+	if err != nil {
+		return false, err
+	}
 	clients, err := inboundSvc.GetClients(data)
 	if err != nil {
 		return false, err
+	}
+	if oldInbound.Protocol == model.GhostLink && oldInbound.Enable && len(clients) != 1 {
+		return false, common.NewError("GhostLink single-client update requires exactly one client while the inbound is enabled")
+	}
+	if len(clients) > 0 {
+		currentIDs, idErr := s.GetInboundIdsForEmail(database.GetDB(), oldEmail)
+		if idErr != nil {
+			return false, idErr
+		}
+		effectiveID, idErr := effectiveAttachmentClientID(
+			database.GetDB(),
+			oldEmail,
+			clients[0].ID,
+		)
+		if idErr != nil {
+			return false, idErr
+		}
+		if compatibilityErr := validateClientAttachmentCompatibility(
+			database.GetDB(),
+			append(currentIDs, data.Id),
+			effectiveID,
+		); compatibilityErr != nil {
+			return false, fmt.Errorf("client %q: %w", clients[0].Email, compatibilityErr)
+		}
 	}
 	if err := validateClientsRenewal(clients); err != nil {
 		return false, err
@@ -768,10 +837,6 @@ func (s *ClientService) UpdateInboundClient(inboundSvc *InboundService, data *mo
 
 	interfaceClients := settings["clients"].([]any)
 
-	oldInbound, err := inboundSvc.GetInbound(data.Id)
-	if err != nil {
-		return false, err
-	}
 	if err := validateTuicClientEmails(oldInbound.Protocol, clients); err != nil {
 		return false, err
 	}
@@ -886,6 +951,11 @@ func (s *ClientService) UpdateInboundClient(inboundSvc *InboundService, data *mo
 	if err := validateAmneziaWGClientWrite(oldInbound, clients, oldEmail); err != nil {
 		return false, err
 	}
+	if oldInbound.Protocol == model.GhostLink {
+		if err := ghostlink.ValidateClient(&clients[0]); err != nil {
+			return false, common.NewError("ghostlink client:", err)
+		}
+	}
 	if oldInbound.Protocol == model.AmneziaWG {
 		portCtx, err := inboundSvc.loadPortConflictContext(database.GetDB(), oldInbound.NodeID)
 		if err != nil {
@@ -993,6 +1063,7 @@ func (s *ClientService) UpdateInboundClient(inboundSvc *InboundService, data *mo
 		return false, nil
 	}
 
+	oldSnapshot := *oldInbound
 	prevSettings := oldInbound.Settings
 	oldInbound.Settings = string(newSettings)
 
@@ -1024,7 +1095,7 @@ func (s *ClientService) UpdateInboundClient(inboundSvc *InboundService, data *mo
 
 	// Persist client stats + inbound atomically, serialized against the traffic
 	// poll to avoid the cross-transaction lock-order deadlock (runSerializedTx).
-	if txErr := runSerializedTx(func(tx *gorm.DB) error {
+	commitTx := func(tx *gorm.DB) error {
 		// Same re-check-inside-the-writer rule as AddInboundClient (#6225):
 		// the pre-tx pass can race a concurrent writer on another inbound.
 		if oldInbound.Protocol == model.AmneziaWG {
@@ -1116,12 +1187,21 @@ func (s *ClientService) UpdateInboundClient(inboundSvc *InboundService, data *mo
 			return (&NodeService{}).MarkNodeDirtyTx(tx, *oldInbound.NodeID)
 		}
 		return nil
-	}); txErr != nil {
+	}
+	if oldSnapshot.Protocol == model.GhostLink && oldSnapshot.Enable {
+		return s.applyGhostLinkSingleClientChange(inboundSvc, &oldSnapshot, oldInbound, commitTx)
+	}
+	if txErr := runSerializedTx(commitTx); txErr != nil {
 		return false, txErr
 	}
 
 	// Apply to the running runtime after the DB is committed — outside the
 	// serialized writer so a slow node call can't stall traffic accounting.
+	if oldInbound.Protocol == model.GhostLink {
+		// An enabled GhostLink update already used the transactional service path.
+		// A disabled inbound persists its edited user without touching Xray.
+		return false, nil
+	}
 	if len(oldEmail) > 0 {
 		if oldInbound.NodeID == nil {
 			if !push {
@@ -1245,6 +1325,7 @@ func (s *ClientService) DelInboundClientByEmail(inboundSvc *InboundService, inbo
 		return false, err
 	}
 
+	oldSnapshot := *oldInbound
 	prevSettings := oldInbound.Settings
 	oldInbound.Settings = string(newSettings)
 
@@ -1281,7 +1362,7 @@ func (s *ClientService) DelInboundClientByEmail(inboundSvc *InboundService, inbo
 
 	// Persist the deletion atomically, serialized against the traffic poll to
 	// avoid the cross-transaction lock-order deadlock (runSerializedTx).
-	if txErr := runSerializedTx(func(tx *gorm.DB) error {
+	commitTx := func(tx *gorm.DB) error {
 		if !emailShared && !keepTraffic {
 			if e := inboundSvc.DelClientIPs(tx, email); e != nil {
 				logger.Error("Error in delete client IPs")
@@ -1304,7 +1385,11 @@ func (s *ClientService) DelInboundClientByEmail(inboundSvc *InboundService, inbo
 			return (&NodeService{}).MarkNodeDirtyTx(tx, *oldInbound.NodeID)
 		}
 		return nil
-	}); txErr != nil {
+	}
+	if oldSnapshot.Protocol == model.GhostLink && oldSnapshot.Enable {
+		return s.applyGhostLinkSingleClientChange(inboundSvc, &oldSnapshot, oldInbound, commitTx)
+	}
+	if txErr := runSerializedTx(commitTx); txErr != nil {
 		return false, txErr
 	}
 
@@ -1312,6 +1397,11 @@ func (s *ClientService) DelInboundClientByEmail(inboundSvc *InboundService, inbo
 	// slow node call can't stall traffic accounting. Independent of emailShared:
 	// Xray users are keyed by inbound tag, so the user must be removed from this
 	// inbound's runtime even when the same email survives in another inbound.
+	if oldInbound.Protocol == model.GhostLink {
+		// The enabled GhostLink path already applied the delete through the
+		// supervisor. It must not fall through to an Xray deletion or restart.
+		return false, nil
+	}
 	if len(email) > 0 {
 		if oldInbound.NodeID == nil {
 			if oldInbound.Protocol == model.MTProto {

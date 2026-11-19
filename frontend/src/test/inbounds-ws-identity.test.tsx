@@ -43,9 +43,63 @@ async function renderInbounds() {
   return { rows, result: hook.result };
 }
 
+async function renderGhostLinkRollup() {
+  const queryClient = makeTestQueryClient();
+  queryClient.setQueryData(keys.inbounds.slim(), [
+    {
+      id: 9,
+      protocol: 'ghostlink',
+      tag: 'ghostlink-in',
+      enable: true,
+      up: 0,
+      down: 0,
+      total: 0,
+      expiryTime: 0,
+      settings: JSON.stringify({
+        clients: [
+          { email: 'enabled@ghost', enable: true },
+          { email: 'manual-off@ghost', enable: false },
+        ],
+      }),
+      clientStats: [
+        {
+          email: 'enabled@ghost',
+          up: 1,
+          down: 2,
+          total: 0,
+          expiryTime: 0,
+          enable: true,
+          inboundId: 9,
+        },
+      ],
+    },
+  ]);
+  queryClient.setQueryData(keys.clients.onlines(), []);
+  queryClient.setQueryData(keys.clients.onlinesByGuid(), {});
+  queryClient.setQueryData(keys.clients.activeInbounds(), {});
+  queryClient.setQueryData(keys.clients.lastOnline(), {});
+  queryClient.setQueryData(keys.settings.defaults(), {});
+  const wrapper = ({ children }: { children: ReactNode }) => (
+    <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
+  );
+  const hook = renderHook(() => useInbounds(), { wrapper });
+  await waitFor(() => expect(hook.result.current.dbInbounds).toHaveLength(1));
+  return hook.result;
+}
+
 // Every client_stats push carries all inbounds' totals, so rebuilding a row whether or
 // not its numbers moved re-ran the client rollup and the whole table on each push.
 describe('inbound websocket merges keep unchanged state', () => {
+  it('tracks GhostLink clients as configuration state, not effective active state', async () => {
+    const result = await renderGhostLinkRollup();
+    expect(result.current.clientCount[9]).toMatchObject({
+      clients: 2,
+      active: [],
+      configEnabled: ['enabled@ghost'],
+      deactive: ['manual-off@ghost'],
+    });
+  });
+
   it('keeps rows and the client rollup when a client_stats push changes nothing', async () => {
     const { rows, result } = await renderInbounds();
     const before = result.current.dbInbounds;

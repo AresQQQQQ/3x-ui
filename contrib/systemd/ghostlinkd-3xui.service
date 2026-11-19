@@ -1,0 +1,33 @@
+[Unit]
+Description=GhostLink single-process server managed by 3x-ui
+After=network-online.target
+Wants=network-online.target
+ConditionPathExists=/etc/ghostlinkd-3xui/server.json
+
+[Service]
+Type=simple
+ExecStart=/opt/ghostlink-vnext/bin/ghostlinkd -config /etc/ghostlinkd-3xui/server.json
+Environment=GODEBUG=http2xconnect=1
+Environment=GOMEMLIMIT=96MiB
+Restart=on-failure
+RestartSec=2s
+TimeoutStopSec=15s
+UMask=0077
+ConfigurationDirectory=ghostlinkd-3xui
+ConfigurationDirectoryMode=0700
+StateDirectory=ghostlinkd-3xui
+StateDirectoryMode=0700
+RuntimeDirectory=ghostlinkd-3xui
+RuntimeDirectoryMode=0700
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectKernelTunables=true
+ProtectControlGroups=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+LockPersonality=true
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+
+[Install]
+WantedBy=multi-user.target

@@ -81,6 +81,9 @@ func (a *InboundController) initRouter(g *gin.RouterGroup) {
 	g.GET("/options", a.getInboundOptions)
 	g.GET("/allLinks", a.getAllInboundLinks)
 	g.GET("/get/:id", a.getInbound)
+	g.GET("/ghostlink/status", a.getGhostLinkStatus)
+	g.GET("/ghostlink/activation", ghostLinkActivationStatus)
+	g.POST("/ghostlink/activation", startGhostLinkActivation)
 	g.GET("/:id/fallbacks", a.getFallbacks)
 	g.GET("/amneziawgKernelReadiness", a.getAmneziaWGKernelReadiness)
 
@@ -96,6 +99,15 @@ func (a *InboundController) initRouter(g *gin.RouterGroup) {
 	g.POST("/import", a.importInbound)
 	g.POST("/:id/fallbacks", a.setFallbacks)
 	g.POST("/pushClientTraffics", a.pushClientTraffics)
+}
+
+func (a *InboundController) getGhostLinkStatus(c *gin.Context) {
+	status, err := a.inboundService.GhostLinkLifecycleStatus(c.Request.Context())
+	if err != nil {
+		jsonMsg(c, I18nWeb(c, "pages.inbounds.toasts.obtain"), err)
+		return
+	}
+	jsonObj(c, status, nil)
 }
 
 // getInbounds retrieves the list of inbounds for the logged-in user.

@@ -21,6 +21,16 @@ services:
       - NET_RAW
     volumes:
       - $PWD/db/:/etc/x-ui/
+      - type: bind
+        source: ${GHOSTLINK_MACHINE_ID_PATH:-/etc/machine-id}
+        target: /host/etc/machine-id
+        read_only: true
+        bind:
+          create_host_path: false
+      # The class entries are relative symlinks to /sys/devices. Mount both
+      # parents so DMI is optional and host NIC addresses resolve.
+      - /sys/class:/host/sys/class:ro
+      - /sys/devices:/host/sys/devices:ro
       - $PWD/cert/:/root/cert/
       # Persists acme.sh state so certificate auto-renewal survives container
       # recreation (the entrypoint re-registers the renewal cron job from it).
@@ -28,6 +38,8 @@ services:
     environment:
       XRAY_VMESS_AEAD_FORCED: "false"
       XUI_ENABLE_FAIL2BAN: "true"
+      GHOSTLINK_LICENSE_HUB_URL: ${GHOSTLINK_LICENSE_HUB_URL:-}
+      # GHOSTLINK_GOMEMLIMIT: "96MiB"
       # Memory tuning. The panel keeps RAM low via GOGC + periodic release; it no
       # longer sets a soft limit from total host RAM (no benefit, risks GC thrash).
       # XUI_GOGC: "75"              # lower = less RAM, slightly more CPU; GOGC env overrides
@@ -48,6 +60,9 @@ services:
     ports:
       # When XUI_PORT is set, publish the same container port (for example "8080:8080").
       - "2053:2053"
+      # Publish the configured GhostLink inbound port when enabled.
+      # - "443:443/tcp"
+      # - "443:443/udp" # dual transport
     restart: unless-stopped
 
   postgres:

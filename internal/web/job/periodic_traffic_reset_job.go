@@ -5,6 +5,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/mhsanaei/3x-ui/v3/internal/database/model"
 	"github.com/mhsanaei/3x-ui/v3/internal/logger"
 	"github.com/mhsanaei/3x-ui/v3/internal/util/common"
 	"github.com/mhsanaei/3x-ui/v3/internal/web/service"
@@ -71,16 +72,18 @@ func (j *PeriodicTrafficResetJob) resetInboundsOnSchedule() {
 		return
 	}
 
-	if j.period == "monthly" {
-		now := time.Now().In(j.location)
-		due := inbounds[:0]
-		for _, inbound := range inbounds {
-			if monthlyResetDue(inbound.TrafficResetDay, now) {
-				due = append(due, inbound)
-			}
+	now := time.Now().In(j.location)
+	due := inbounds[:0]
+	for _, inbound := range inbounds {
+		if inbound.Protocol == model.GhostLink {
+			continue
 		}
-		inbounds = due
+		if j.period == "monthly" && !monthlyResetDue(inbound.TrafficResetDay, now) {
+			continue
+		}
+		due = append(due, inbound)
 	}
+	inbounds = due
 	if len(inbounds) == 0 {
 		return
 	}
@@ -131,6 +134,14 @@ func (j *PeriodicTrafficResetJob) resetClientsOnTheirOwnCycle() {
 	now := time.Now().In(j.location)
 	due := make([]service.ClientResetCycle, 0, len(cycles))
 	for _, c := range cycles {
+		isGhostLink, err := j.inboundService.IsGhostLinkClientEmail(c.Email)
+		if err != nil {
+			logger.Warning("Failed to resolve GhostLink identity for periodic traffic reset:", err)
+			continue
+		}
+		if isGhostLink {
+			continue
+		}
 		// Monthly clients come due on their own day, the rule the inbound-level
 		// schedule already follows.
 		if j.period == "monthly" && !monthlyResetDue(c.TrafficResetDay, now) {

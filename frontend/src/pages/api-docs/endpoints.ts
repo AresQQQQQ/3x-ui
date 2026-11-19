@@ -306,6 +306,23 @@ export const sections: readonly Section[] = [
         params: [{ name: 'id', in: 'path', type: 'number', desc: 'Inbound ID.' }],
       },
       {
+        method: 'GET',
+        path: '/panel/api/inbounds/ghostlink/status',
+        summary:
+          'Read the supervised GhostLink process state without secrets. Reports desired/active config and user revisions, TCP/H2 + UDP/H3 listen address, MainPID, authenticated runtime readiness, pending operations, usage state, and policy state. An API failure or revision mismatch must not be shown as healthy.',
+      },
+      {
+        method: 'GET',
+        path: '/panel/api/inbounds/ghostlink/activation',
+        summary: 'Read local installation status and shortened host fingerprints.',
+      },
+      {
+        method: 'POST',
+        path: '/panel/api/inbounds/ghostlink/activation',
+        summary: 'Submit a local GhostLink request to the configured License Hub.',
+        body: '{\n  "note": "Optional note for the approver"\n}',
+      },
+      {
         method: 'POST',
         path: '/panel/api/inbounds/add',
         summary:

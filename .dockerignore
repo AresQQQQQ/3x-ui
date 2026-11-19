@@ -8,3 +8,14 @@ pgdata
 x-ui/
 *.db
 *.dump
+**/ghostlinkd
+**/ghostlinkd.new
+**/ghostlinkd-linux-*
+**/license.lic
+**/activation.json
+.tools
+**/.env
+**/.env.*
+**/*.pem
+!internal/pia/trust/serverlist_public_key.pem
+**/*.key

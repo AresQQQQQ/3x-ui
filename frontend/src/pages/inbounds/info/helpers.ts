@@ -97,7 +97,9 @@ export function buildInboundInfo(dbInbound: DBInboundLike): InboundInfo {
     | { multiMode?: boolean; serviceName?: string }
     | undefined;
   let serverName = '';
-  if (security === 'tls') {
+  if (dbInbound.protocol === Protocols.GHOSTLINK) {
+    serverName = typeof settings.serverName === 'string' ? settings.serverName : '';
+  } else if (security === 'tls') {
     const tls = stream.tlsSettings as { sni?: string; serverName?: string } | undefined;
     serverName = tls?.sni ?? tls?.serverName ?? '';
   } else if (security === 'reality') {

@@ -41,6 +41,7 @@ export interface DBInboundRecord extends ProtocolFlags {
 export interface ClientCountEntry {
   clients: number;
   active: string[];
+  configEnabled: string[];
   deactive: string[];
   depleted: string[];
   expiring: string[];

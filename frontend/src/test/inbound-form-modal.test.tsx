@@ -46,7 +46,10 @@ function chooseVirtualizedProtocol(optionText: string) {
   const input = document.getElementById('protocol') as HTMLElement;
   const select = input.closest('.ant-select') as HTMLElement;
   const current = (select.textContent ?? '').trim();
-  const order = Object.values(Protocols) as string[];
+  const order = [
+    Protocols.GHOSTLINK,
+    ...Object.values(Protocols).filter((p) => p !== Protocols.GHOSTLINK),
+  ] as string[];
   const steps = order.indexOf(optionText) - order.indexOf(current);
   if (order.indexOf(optionText) < 0 || order.indexOf(current) < 0 || steps < 0) {
     throw new Error(`cannot step from '${current}' to '${optionText}'`);
@@ -300,6 +303,10 @@ describe('InboundFormModal', () => {
     const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
     onTestFinished(() => consoleError.mockRestore());
     renderModal();
+    chooseVirtualizedProtocol('vless');
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 0));
+    });
 
     fireEvent.click(screen.getByRole('tab', { name: 'Security' }));
     fireEvent.click(screen.getByRole('radio', { name: 'TLS' }));

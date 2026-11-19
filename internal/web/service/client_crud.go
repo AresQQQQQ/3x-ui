@@ -221,7 +221,6 @@ func (s *ClientService) Create(inboundSvc *InboundService, payload *ClientCreate
 	if len(payload.InboundIds) == 0 {
 		return false, common.NewError("at least one inbound is required")
 	}
-
 	if client.SubID == "" {
 		client.SubID = uuid.NewString()
 	}
@@ -256,6 +255,13 @@ func (s *ClientService) Create(inboundSvc *InboundService, payload *ClientCreate
 		if client.Secret == "" {
 			client.Secret = existing.Secret
 		}
+	}
+	if err := validateClientAttachmentCompatibility(
+		database.GetDB(),
+		payload.InboundIds,
+		client.ID,
+	); err != nil {
+		return false, err
 	}
 
 	if client.SubID != "" {
@@ -680,6 +686,13 @@ func (s *ClientService) Update(inboundSvc *InboundService, id int, updated model
 	if err != nil {
 		return false, err
 	}
+	if err := validateClientAttachmentCompatibility(
+		database.GetDB(),
+		inboundIds,
+		existing.UUID,
+	); err != nil {
+		return false, err
+	}
 	// The rename rewrites the one shared client record, so every node holding
 	// this client goes stale — not just the ones an inboundIds filter applies.
 	attachedIds := append([]int(nil), inboundIds...)
@@ -762,6 +775,13 @@ func (s *ClientService) Update(inboundSvc *InboundService, id int, updated model
 	// value still rotates it intentionally.
 	if updated.ID == "" {
 		updated.ID = existing.UUID
+	}
+	if err := validateClientAttachmentCompatibility(
+		database.GetDB(),
+		attachedIds,
+		updated.ID,
+	); err != nil {
+		return false, err
 	}
 	if updated.Password == "" {
 		updated.Password = existing.Password
@@ -1169,6 +1189,13 @@ func (s *ClientService) Attach(inboundSvc *InboundService, id int, inboundIds []
 	}
 
 	clientWire := existing.ToClient()
+	if err := validateClientAttachmentCompatibility(
+		database.GetDB(),
+		append(append([]int(nil), currentIds...), inboundIds...),
+		clientWire.ID,
+	); err != nil {
+		return false, err
+	}
 	flow, ffErr := s.EffectiveFlow(nil, id)
 	if ffErr != nil {
 		return false, ffErr

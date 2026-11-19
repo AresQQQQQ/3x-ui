@@ -33,6 +33,9 @@ func inboundTransports(protocol model.Protocol, streamSettings, settings string)
 		return transportTCP
 	case model.MASQUE:
 		return masqueTransports(streamSettings)
+	case model.GhostLink:
+		// H2/TCP and H3/UDP intentionally share one numeric listener port.
+		return transportTCP | transportUDP
 	}
 
 	var bits transportBits

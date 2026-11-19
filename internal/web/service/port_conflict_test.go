@@ -81,6 +81,7 @@ func TestInboundTransports(t *testing.T) {
 		{"masque h3 is udp", model.MASQUE, `{"network":"masque","tlsSettings":{"alpn":["h3"]}}`, ``, transportUDP},
 		{"masque h2 is tcp", model.MASQUE, `{"network":"masque","tlsSettings":{"alpn":["h2"]}}`, ``, transportTCP},
 		{"masque h3+h2 is both", model.MASQUE, `{"network":"masque","tlsSettings":{"alpn":["h3","h2"]}}`, ``, transportTCP | transportUDP},
+		{"ghostlink h2+h3 shares one numeric port", model.GhostLink, ``, ``, transportTCP | transportUDP},
 
 		{"shadowsocks tcp,udp", model.Shadowsocks, ``, `{"network":"tcp,udp"}`, transportTCP | transportUDP},
 		{"shadowsocks udp only", model.Shadowsocks, ``, `{"network":"udp"}`, transportUDP},

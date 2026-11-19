@@ -140,7 +140,10 @@ func (s *SubJsonService) GetJson(subId string, host string, alwaysReturnArray bo
 	var ordered []orderedSubEntry[func() subConfigEntry]
 	// Prepare Inbounds
 	for _, inbound := range inbounds {
-		clients := subReq.matchingClients(inbound, subId)
+		clients, clientErr := subReq.matchingSubscriptionClients(inbound, subId)
+		if clientErr != nil {
+			return "", "", clientErr
+		}
 		if len(clients) == 0 {
 			continue
 		}
@@ -149,6 +152,9 @@ func (s *SubJsonService) GetJson(subId string, host string, alwaysReturnArray bo
 				hasEnabledClient = true
 			}
 			continue
+		}
+		if inbound.Protocol == model.GhostLink {
+			return "", "", ghostLinkUnsupportedFormat("Xray JSON subscription")
 		}
 		subReq.projectThroughFallbackMaster(inbound)
 		var baseEps []map[string]any

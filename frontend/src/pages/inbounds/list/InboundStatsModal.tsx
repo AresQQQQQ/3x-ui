@@ -138,6 +138,11 @@ export default function InboundStatsModal({
                   {clientCount[record.id].online.length} {t('online')}
                 </Tag>
               )}
+              {clientCount[record.id].configEnabled.length > 0 && (
+                <Tag color="orange">
+                  {clientCount[record.id].configEnabled.length} {t('pages.inbounds.configEnabled')}
+                </Tag>
+              )}
               {clientCount[record.id].depleted.length > 0 && (
                 <Tag color="red">
                   {clientCount[record.id].depleted.length} {t('depleted')}
