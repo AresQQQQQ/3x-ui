@@ -1,3 +1,5 @@
+> **GhostLink 定制版：[一键部署与授权激活](README.GhostLink.md)** · Clean prebuilt images contain no core binary or shared secrets.
+
 [English](/README.md) | [فارسی](/README.fa_IR.md) | [العربية](/README.ar_EG.md) | [中文](/README.zh_CN.md) | [Español](/README.es_ES.md) | [Русский](/README.ru_RU.md) | [Türkçe](/README.tr_TR.md)
 
 <p align="center">

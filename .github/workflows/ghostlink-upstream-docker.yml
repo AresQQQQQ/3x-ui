@@ -188,7 +188,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           VERSION: ${{ needs.merge-test.outputs.version }}
         run: |
-          image="ghcr.io/${GITHUB_REPOSITORY,,}-ghostlink"
+          image="ghcr.io/${GITHUB_REPOSITORY,,}"
           for arch in amd64 arm64; do
             docker tag "ghostlink-panel:$arch" "$image:$VERSION-$arch"
             docker push "$image:$VERSION-$arch"
