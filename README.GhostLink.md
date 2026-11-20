@@ -35,10 +35,12 @@ Docker Compose 不是运行镜像的必要条件。可以直接使用 `docker ru
 
 ### 方式一：直接运行 `docker run`
 
-准备一台 Linux 服务器并安装 Docker Engine。
+准备一台 Linux 服务器并安装 Docker Engine。镜像已内置容器模式、启动入口和默认
+Fail2ban 开关，因此无需重复设置 `XUI_IN_DOCKER`、`XUI_MAIN_FOLDER`、
+`XUI_ENABLE_FAIL2BAN` 或 `--tty`。
 
 ```bash
-mkdir -p /opt/3x-ui-ghostlink/{db,cert,acme}
+mkdir -p /opt/3x-ui-ghostlink/db
 cd /opt/3x-ui-ghostlink
 docker pull ghcr.io/aresqqqqq/3x-ui-ghostlink:latest
 docker run -d \
@@ -46,32 +48,32 @@ docker run -d \
   --network host \
   --cap-add NET_ADMIN \
   --cap-add NET_RAW \
-  --restart unless-stopped \
-  --tty \
-  -e XRAY_VMESS_AEAD_FORCED=false \
-  -e XUI_ENABLE_FAIL2BAN=true \
   -e GHOSTLINK_LICENSE_HUB_URL=https://auth.114514707.xyz \
-  -e GHOSTLINK_GOMEMLIMIT=96MiB \
-  -e XUI_GOGC=75 \
-  -e XUI_MEMORY_LIMIT=256 \
   -v "$PWD/db:/etc/x-ui/" \
   -v /etc/machine-id:/host/etc/machine-id:ro \
   -v /sys/class:/host/sys/class:ro \
   -v /sys/devices:/host/sys/devices:ro \
-  -v "$PWD/cert:/root/cert/" \
-  -v "$PWD/acme:/root/.acme.sh/" \
   ghcr.io/aresqqqqq/3x-ui-ghostlink:latest
 ```
 
-该命令与下方的 Compose 模板等价。`--network host` 让面板和 GhostLink 直接使用
-宿主机网络端口。必须保留 `./db` 挂载，否则升级或重建容器会丢失面板数据库、
-已下载的 `ghostlinkd` 和 `license.lic`。
+`--network host` 让面板和 GhostLink 直接使用宿主机网络端口。必须保留 `./db`
+挂载，否则升级或重建容器会丢失面板数据库、已下载的 `ghostlinkd` 和
+`license.lic`。
 
 具体落盘位置为：
 
 - `db/x-ui.db`：面板数据库
 - `db/ghostlink/ghostlinkd`：授权后下载的核心
 - `db/ghostlink/license.lic`：节点许可证
+
+需要自动重启、证书或 ACME 续期状态持久化时，可以按需增加：
+
+- `--restart unless-stopped`：容器异常退出后自动重启
+- `-v "$PWD/cert:/root/cert/"`：在宿主机持久化证书
+- `-v "$PWD/acme:/root/.acme.sh/"`：在宿主机持久化 ACME 状态
+
+这些属于运维选项，不设置仍能启动面板。内存相关的环境变量同样属于按机器规格
+调整的可选项，不需要复制到最简启动命令中。
 
 ### 方式二：Docker Compose（可选）
 
