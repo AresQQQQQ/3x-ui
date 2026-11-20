@@ -38,6 +38,8 @@ mkdir -p /opt/3x-ui-ghostlink/db
 
 docker run -d \
   --network host \
+  --cap-add NET_ADMIN \
+  --cap-add NET_RAW \
   -e GHOSTLINK_LICENSE_HUB_URL=https://auth.114514707.xyz \
   -v /opt/3x-ui-ghostlink/db:/etc/x-ui \
   -v /etc/machine-id:/host/etc/machine-id:ro \
@@ -52,11 +54,9 @@ docker run -d \
 http://服务器IP:2053
 ```
 
-如果还需要启用面板的客户端 IP 限制和自动封禁，在 `docker run` 中增加：
-
-```bash
---cap-add NET_ADMIN --cap-add NET_RAW
-```
+镜像默认启用 Fail2ban 用于客户端 IP 限制和自动封禁，因此上面保留了 `NET_ADMIN`
+与 `NET_RAW` 权限。如果不需要该功能，可以去掉这两个 `--cap-add` 参数并加上
+`-e XUI_ENABLE_FAIL2BAN=false`。
 
 需要容器异常退出后自动重启时，增加 `--restart unless-stopped`。需要长期保存
 证书或 ACME 状态时，再按需增加对应目录挂载。
