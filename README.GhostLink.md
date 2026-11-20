@@ -11,11 +11,21 @@
 
 未启用 GhostLink 入站时，面板不会启动 `ghostlinkd`，也不会访问 License-Hub。
 
-> **镜像可见性**
->
-> 首次发布的 GHCR 包默认可能是 Private。若 `docker pull` 返回未授权，请在
-> GitHub Package settings 中将
-> `AresQQQQQ/3x-ui-ghostlink` 的可见性调整为 Public。
+预编译镜像位于公开 GHCR：
+
+```text
+ghcr.io/aresqqqqq/3x-ui-ghostlink:latest
+```
+
+该地址可匿名拉取，不需要源码构建，也不需要 GHCR 登录：
+
+```bash
+docker pull ghcr.io/aresqqqqq/3x-ui-ghostlink:latest
+```
+
+`https://auth.114514707.xyz` 是面板申请授权时访问的 **License-Hub**
+入口，由该服务的管理方通过 Cloudflare Tunnel 对外提供。它不是面板登录地址，
+也不表示面板容器内含 `cloudflared`。面板自身仍通过服务器 IP 和面板端口访问。
 
 ## 一键部署
 
@@ -28,6 +38,9 @@ curl -fLO https://raw.githubusercontent.com/AresQQQQQ/3x-ui-ghostlink/main/docke
 docker compose -f docker-compose.ghostlink.yml pull
 docker compose -f docker-compose.ghostlink.yml up -d
 ```
+
+Compose 文件中的 `image:` 已固定为上面的 GHCR 地址，因此 `pull` 拉取的是
+预编译成品，不会在服务器上构建源码。
 
 打开 `http://服务器地址:2053`，完成面板首次登录和安全设置。模板使用
 `network_mode: host`，以保留 GhostLink 的 TCP/UDP 监听能力。请只在专用 VPS
@@ -52,6 +65,10 @@ docker compose -f docker-compose.ghostlink.yml up -d
 4. 面板会向 `https://auth.114514707.xyz` 提交申请并显示审批进度。
 5. 审批通过后，面板自动完成临时 X25519 协商、分块解密、SHA-256 校验和落盘。
 6. 状态变为就绪后，创建入站并配置客户端。
+
+Cloudflare Tunnel 在这里只承担 License-Hub 的公网 HTTPS 接入，不代理面板后台，
+也不是 GhostLink 入站流量通道。已激活节点的 `ghostlinkd` 离线自治运行，不会
+因为 Cloudflare 或 License-Hub 暂时不可达而停止转发。
 
 授权未完成时不能创建有效 GhostLink 入站。不要重复提交大量申请，待审批数量存在
 队列上限。
