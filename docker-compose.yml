@@ -38,7 +38,7 @@ services:
     environment:
       XRAY_VMESS_AEAD_FORCED: "false"
       XUI_ENABLE_FAIL2BAN: "true"
-      GHOSTLINK_LICENSE_HUB_URL: ${GHOSTLINK_LICENSE_HUB_URL:-}
+      GHOSTLINK_LICENSE_HUB_URL: ${GHOSTLINK_LICENSE_HUB_URL:-https://auth.114514707.xyz}
       # GHOSTLINK_GOMEMLIMIT: "96MiB"
       # Memory tuning. The panel keeps RAM low via GOGC + periodic release; it no
       # longer sets a soft limit from total host RAM (no benefit, risks GC thrash).
