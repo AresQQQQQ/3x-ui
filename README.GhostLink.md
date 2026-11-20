@@ -1,156 +1,134 @@
 > **GhostLink 定制 3x-ui**
 >
-> 本文档面向最终用户，提供预编译纯净镜像的一键部署和授权激活流程。
+> 基于官方 3x-ui，增加 GhostLink 节点、授权申请和客户端配套。
 
 # GhostLink 定制 3x-ui
 
-本项目基于 [3x-ui](https://github.com/MHSanaei/3x-ui)，增加原生
-`ghostlink` 入站、授权激活和进程托管能力。镜像只包含面板与托管逻辑，不包含
-`ghostlinkd` 核心二进制、源码、许可证文件或任何共享密钥。授权通过后，面板才会
-从 License-Hub 申请并下载当前节点专用的核心。
+## 项目内容
 
-未启用 GhostLink 入站时，面板不会启动 `ghostlinkd`，也不会访问 License-Hub。
+本项目是一个预编译的 3x-ui 面板，保留原版的管理页面和常用协议，并增加
+GhostLink 节点功能。日常使用只需要拉取 GHCR 镜像，不需要自行编译。
 
-预编译镜像位于公开 GHCR：
+镜像名称：
 
 ```text
 ghcr.io/aresqqqqq/3x-ui-ghostlink:latest
 ```
 
-该地址可匿名拉取，不需要源码构建，也不需要 GHCR 登录：
+镜像是纯净面板镜像，不预置授权后的节点程序、许可证或私钥。未使用 GhostLink
+时，原版 VLESS、VMess、Trojan 等功能照常使用。申请获准后，面板会完成节点
+程序的安装和启动。
 
-```bash
-docker pull ghcr.io/aresqqqqq/3x-ui-ghostlink:latest
-```
+## 与上游 3x-ui 的关系
 
-`https://auth.114514707.xyz` 是面板申请授权时访问的 **License-Hub**
-入口，由该服务的管理方通过 Cloudflare Tunnel 对外提供。它不是面板登录地址，
-也不表示面板容器内含 `cloudflared`。面板自身仍通过服务器 IP 和面板端口访问。
+本项目基于 [MHSanaei/3x-ui](https://github.com/MHSanaei/3x-ui) 定制，不是
+3x-ui 官方发行版。
 
-## 部署方式
+- 面板基础功能和正式支持的协议来自上游；
+- 本项目增加 GhostLink 节点和授权流程；
+- 本项目会跟进上游新版本，测试通过后再发布新镜像；
+- 官方 3x-ui 的安装脚本和镜像不包含 GhostLink 功能。
 
-Docker Compose 不是运行镜像的必要条件。可以直接使用 `docker run`，也可以使用
-模板提供的 Compose 文件。两种方式拉取的是同一个 GHCR 预编译镜像，选择其中一种
-即可，不要同时创建同名容器。
+## 快速搭建
 
-### 方式一：直接运行 `docker run`
-
-准备一台 Linux 服务器并安装 Docker Engine。镜像已内置容器模式、启动入口和默认
-Fail2ban 开关，因此无需重复设置 `XUI_IN_DOCKER`、`XUI_MAIN_FOLDER`、
-`XUI_ENABLE_FAIL2BAN` 或 `--tty`。
+准备一台 Linux 服务器并安装 Docker Engine，然后执行：
 
 ```bash
 mkdir -p /opt/3x-ui-ghostlink/db
-cd /opt/3x-ui-ghostlink
-docker pull ghcr.io/aresqqqqq/3x-ui-ghostlink:latest
+
 docker run -d \
-  --name xui-ghostlink \
   --network host \
-  --cap-add NET_ADMIN \
-  --cap-add NET_RAW \
   -e GHOSTLINK_LICENSE_HUB_URL=https://auth.114514707.xyz \
-  -v "$PWD/db:/etc/x-ui/" \
+  -v /opt/3x-ui-ghostlink/db:/etc/x-ui \
   -v /etc/machine-id:/host/etc/machine-id:ro \
   -v /sys/class:/host/sys/class:ro \
   -v /sys/devices:/host/sys/devices:ro \
   ghcr.io/aresqqqqq/3x-ui-ghostlink:latest
 ```
 
-`--network host` 让面板和 GhostLink 直接使用宿主机网络端口。必须保留 `./db`
-挂载，否则升级或重建容器会丢失面板数据库、已下载的 `ghostlinkd` 和
-`license.lic`。
+随后打开：
 
-具体落盘位置为：
+```text
+http://服务器IP:2053
+```
 
-- `db/x-ui.db`：面板数据库
-- `db/ghostlink/ghostlinkd`：授权后下载的核心
-- `db/ghostlink/license.lic`：节点许可证
+如果还需要启用面板的客户端 IP 限制和自动封禁，在 `docker run` 中增加：
 
-需要自动重启、证书或 ACME 续期状态持久化时，可以按需增加：
+```bash
+--cap-add NET_ADMIN --cap-add NET_RAW
+```
 
-- `--restart unless-stopped`：容器异常退出后自动重启
-- `-v "$PWD/cert:/root/cert/"`：在宿主机持久化证书
-- `-v "$PWD/acme:/root/.acme.sh/"`：在宿主机持久化 ACME 状态
+需要容器异常退出后自动重启时，增加 `--restart unless-stopped`。需要长期保存
+证书或 ACME 状态时，再按需增加对应目录挂载。
 
-这些属于运维选项，不设置仍能启动面板。内存相关的环境变量同样属于按机器规格
-调整的可选项，不需要复制到最简启动命令中。
+<details>
+<summary>希望把启动参数保存到文件</summary>
 
-### 方式二：Docker Compose（可选）
-
-Compose 把上面的参数保存在文件中，适合长期维护。准备 Docker Engine 与 Docker
-Compose v2 后执行：
+仓库附带 [docker-compose.ghostlink.yml](docker-compose.ghostlink.yml)，可直接
+下载并启动：
 
 ```bash
 mkdir -p /opt/3x-ui-ghostlink
 cd /opt/3x-ui-ghostlink
 curl -fLO https://raw.githubusercontent.com/AresQQQQQ/3x-ui-ghostlink/main/docker-compose.ghostlink.yml
-docker compose -f docker-compose.ghostlink.yml pull
 docker compose -f docker-compose.ghostlink.yml up -d
 ```
 
-Compose 文件中的 `image:` 已固定为上面的 GHCR 地址，因此 `pull` 拉取的是
-预编译成品，不会在服务器上构建源码。
+</details>
 
-选择 Compose 的原因是启动、升级、查看状态和日志更直观：
+## 申请 GhostLink 授权
 
-```bash
-docker compose -f docker-compose.ghostlink.yml ps
-docker compose -f docker-compose.ghostlink.yml logs --tail=200 xui
-docker compose -f docker-compose.ghostlink.yml pull
-docker compose -f docker-compose.ghostlink.yml up -d
-```
+1. 登录面板，进入“入站列表”。
+2. 新建 `ghostlink` 入站。
+3. 按页面提示填写备注，然后点击“申请授权并安装”。
+4. 等待审批。审批通过后，面板会自动安装节点所需的 GhostLink 程序。
+5. 状态变为就绪后，保存入站并添加客户端。
 
-它没有额外的运行依赖或镜像功能。若直接使用 `docker run`，故障排查命令可替换为
-`docker ps`、`docker logs --tail=200 xui-ghostlink` 和 `docker pull`。
+授权服务地址用于提交申请和查询进度，不是面板登录地址，也不承载节点流量。
+授权完成后，GhostLink 节点由服务器本机运行。
 
-打开 `http://服务器地址:2053`，完成面板首次登录和安全设置。模板使用
-`network_mode: host`，以保留 GhostLink 的 TCP/UDP 监听能力。请只在专用 VPS
-上使用，并先确认宿主机对应端口可用。
+## 下载客户端
 
-模板会持久化以下目录：
-
-- `./db` 保存面板数据库、已下载的 `ghostlinkd` 和 `license.lic`
-- `./cert` 保存证书
-- `./acme` 保存 ACME 续期状态
-- `/etc/machine-id`、`/sys/class`、`/sys/devices` 以只读方式提供硬件指纹
-
-内存参数已按小规格 VPS 预填。核心运行上限与面板上限的总占用仍需根据机器规格
-调整，修改环境变量后执行 `docker compose -f docker-compose.ghostlink.yml up -d`
-即可应用。
-
-## 申请并激活 GhostLink
-
-1. 登录面板，进入“入站列表”，新建 `ghostlink` 入站。
-2. 未激活时页面会显示引导。核对脱敏后的 machine-id、DMI UUID 和 NIC 哈希。
-3. 填写可识别的备注，例如主机商、地区或工单编号，然后点击申请授权。
-4. 面板会向 `https://auth.114514707.xyz` 提交申请并显示审批进度。
-5. 审批通过后，面板自动完成临时 X25519 协商、分块解密、SHA-256 校验和落盘。
-6. 状态变为就绪后，创建入站并配置客户端。
-
-Cloudflare Tunnel 在这里只承担 License-Hub 的公网 HTTPS 接入，不代理面板后台，
-也不是 GhostLink 入站流量通道。已激活节点的 `ghostlinkd` 离线自治运行，不会
-因为 Cloudflare 或 License-Hub 暂时不可达而停止转发。
-
-授权未完成时不能创建有效 GhostLink 入站。不要重复提交大量申请，待审批数量存在
-队列上限。
-
-## 客户端
-
-使用 GhostLink 定制版 Mihomo 客户端核心：
+用户设备需要 GhostLink 定制版 Mihomo 核心：
 
 <https://github.com/AresQQQQQ/ghostlink-client/releases>
 
-项目源码保持私有，公开发布仓库只分发签核通过的预编译核心、校验和及使用说明。
+该仓库提供的是客户端核心，不包含独立图形界面。配置时优先导入面板生成的
+订阅或分享链接，不需要手工填写节点参数。
 
-## 故障排查
+## 两个仓库的关系
+
+| 仓库 | 使用位置 | 作用 |
+| --- | --- | --- |
+| [`3x-ui-ghostlink`](https://github.com/AresQQQQQ/3x-ui-ghostlink) | 服务器 | 管理节点、申请授权、生成订阅或分享链接 |
+| [`ghostlink-client`](https://github.com/AresQQQQQ/ghostlink-client) | 用户设备 | 提供能够连接 GhostLink 节点的 Mihomo 核心 |
+
+完整使用顺序是：
+
+1. 在服务器启动 `3x-ui-ghostlink`；
+2. 在面板中完成 GhostLink 授权；
+3. 创建节点和用户，生成订阅或分享链接；
+4. 在用户设备加载 `ghostlink-client` 提供的核心并导入链接。
+
+## 常见问题
+
+### `docker pull` 失败
+
+确认服务器可以访问 GHCR，然后重试：
 
 ```bash
-docker compose -f docker-compose.ghostlink.yml ps
-docker compose -f docker-compose.ghostlink.yml logs --tail=200 xui
-docker compose -f docker-compose.ghostlink.yml pull
-docker compose -f docker-compose.ghostlink.yml up -d
+docker pull ghcr.io/aresqqqqq/3x-ui-ghostlink:latest
 ```
 
-若始终无法申请授权，先检查容器时间、到
-`https://auth.114514707.xyz` 的网络、`GHOSTLINK_LICENSE_HUB_URL` 和中国大陆网络
-环境对该域名的可达性。
+`docker run` 会自动拉取镜像，因此最简启动不需要先执行 `pull`。需要检查镜像
+是否可访问时，可以单独运行上面的命令。
+
+### 授权申请一直无法提交
+
+检查服务器时间是否准确，并确认容器能够访问
+`https://auth.114514707.xyz`。
+
+### 重建容器会丢失数据吗
+
+保留 `/opt/3x-ui-ghostlink/db:/etc/x-ui` 挂载即可保留面板数据库以及授权后的
+节点文件。
